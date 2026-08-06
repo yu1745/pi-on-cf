@@ -21,6 +21,13 @@ export type WorkspaceFileContent = WorkspaceFile & {
   content: string
 }
 
+export type ModelOption = {
+  id: string
+  label: string
+  source: 'env' | 'cloudflare'
+  default?: boolean
+}
+
 export type AppDeploymentSummary = {
   sourceHash: string
   bundleHash: string
@@ -173,7 +180,9 @@ export interface PiSessionContract {
   initializeApp(): Promise<AppStatus>
   getAppStatus(): Promise<AppStatus>
   deployApp(): Promise<AppDeploymentSummary>
-  prompt(prompt: string): Promise<void>
+  listModels(): Promise<{ models: ModelOption[]; selected?: string }>
+  setModel(modelId: string): Promise<{ selected: string }>
+  prompt(prompt: string, modelId?: string): Promise<void>
 }
 
 export interface PiRegistryContract {

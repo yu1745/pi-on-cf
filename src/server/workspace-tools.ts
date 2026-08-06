@@ -1,5 +1,4 @@
 import type { AgentHarnessTool } from '@earendil-works/pi-agent-core'
-import type { WorkspaceRuntimeValue } from '@cloudflare/computer'
 import { Type } from 'typebox'
 import type { SessionSearchResult } from '../shared/pi-contract'
 import type { ComputerWorkspace } from './computer-workspace'
@@ -17,7 +16,19 @@ const text = (value: unknown) => ({
   details: {},
 })
 
-export function createWorkspaceTools(workspace: ComputerWorkspace) {
+export type CreateWorkspaceToolsOptions = {
+  /**
+   * Credentials injected into git network operations (clone/push/pull)
+   * via isomorphic-git's onAuth callback as HTTP Basic auth. Built from
+   * the configured git token so the agent never handles credentials itself.
+   */
+  gitAuth?: { username: string; password: string }
+}
+
+export function createWorkspaceTools(workspace: ComputerWorkspace, options?: CreateWorkspaceToolsOptions) {
+  const gitAuth = options?.gitAuth
+  const authHeaders = gitAuth ? { Authorization: `Basic ${btoa(`${gitAuth.username}:${gitAuth.password}`)}` } : undefined
+
   const readSchema = Type.Object({ path: Type.String({ description: 'Absolute workspace path' }) })
   const writeSchema = Type.Object({
     path: Type.String({ description: 'Absolute workspace path' }),
@@ -36,25 +47,23 @@ export function createWorkspaceTools(workspace: ComputerWorkspace) {
     pattern: Type.String({ description: 'File glob to search' }),
     query: Type.String({ description: 'Text or regular expression to find' }),
   })
-  const execSchema = Type.Object({
-    command: Type.String({ description: 'Shell command to run in the workspace' }),
-    cwd: Type.Optional(Type.String({ description: `Workspace directory, defaults to ${WORKSPACE_ROOT}` })),
-    backend: Type.Optional(Type.Union([
-      Type.Literal('shell'),
-      Type.Literal('container'),
-    ], { description: 'Use shell for fast text and Git operations, or container for native binaries and network access' })),
-  })
-  const javascriptSchema = Type.Object({
-    source: Type.String({ description: 'ECMAScript module with a default export or default function' }),
-    input: Type.Optional(Type.Unknown({ description: 'JSON-compatible input passed to the default function' })),
-    cwd: Type.Optional(Type.String({ description: `Module working directory, defaults to ${WORKSPACE_ROOT}` })),
-  })
-  const publishSchema = Type.Object({
-    path: Type.String({ description: 'Absolute path of the workspace file to share' }),
-    expiresAfterMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 604_800_000 })),
-  })
-  const artifactsSchema = Type.Object({
-    argv: Type.Array(Type.String(), { minItems: 1, description: 'Artifacts CLI arguments, such as ["list"]' }),
+  const gitSchema = Type.Object({
+    command: Type.Union([
+      Type.Literal('clone'),
+      Type.Literal('status'),
+      Type.Literal('add'),
+      Type.Literal('commit'),
+      Type.Literal('push'),
+      Type.Literal('pull'),
+      Type.Literal('log'),
+    ], { description: 'Git subcommand to run' }),
+    url: Type.Optional(Type.String({ description: 'Repository URL for clone. HTTPS only.' })),
+    message: Type.Optional(Type.String({ description: 'Commit message for commit' })),
+    paths: Type.Optional(Type.Array(Type.String(), { description: 'Paths to stage for add, relative to dir. Defaults to ["."]' })),
+    dir: Type.Optional(Type.String({ description: `Working-tree directory, defaults to ${WORKSPACE_ROOT}` })),
+    ref: Type.Optional(Type.String({ description: 'Branch/tag/commit ref for clone/push/pull' })),
+    remote: Type.Optional(Type.String({ description: 'Remote name for push/pull, defaults to "origin"' })),
+    force: Type.Optional(Type.Boolean({ description: 'Force push' })),
   })
 
   const readTool: AgentHarnessTool<undefined, typeof readSchema> = {
@@ -144,125 +153,65 @@ export function createWorkspaceTools(workspace: ComputerWorkspace) {
     },
   }
 
-  const execTool: AgentHarnessTool<undefined, typeof execSchema> = {
-    name: 'exec',
-    label: 'Execute command',
-    description: 'Run a command with Computer. Use shell for fast built-in text tools and Git; use container for Linux, Node.js, npm, native binaries, and network access.',
-    parameters: execSchema,
+  const gitTool: AgentHarnessTool<undefined, typeof gitSchema> = {
+    name: 'git',
+    label: 'Git',
+    description: 'Run git operations (clone/status/add/commit/push/pull/log) via isomorphic-git over HTTPS. Private-repo auth is injected automatically.',
+    parameters: gitSchema,
     executionMode: 'sequential',
-    execute: async (_id, { command, cwd, backend }, signal) => {
+    execute: async (_id, params, signal) => {
       signal?.throwIfAborted()
-      const selectedBackend = backend ?? 'shell'
-      const directory = requireWorkspacePath(cwd ?? WORKSPACE_ROOT)
-      using handle = await workspace.runtime.exec(command, {
-        cwd: directory,
-        encoding: 'utf8',
-        backend: selectedBackend,
-      })
-      const abort = () => void handle.kill('SIGTERM').catch(() => undefined)
-      signal?.addEventListener('abort', abort, { once: true })
+      const dir = requireWorkspacePath(params.dir ?? WORKSPACE_ROOT)
+      const git = workspace.git
       try {
-        const result = await handle.result()
-        signal?.throwIfAborted()
-        return text({
-          status: result.status,
-          exitCode: result.exitCode,
-          stdout: result.stdout,
-          stderr: result.stderr,
-          pushed: result.pushed,
-          pulled: result.pulled,
-          skipped: result.skipped,
-          sync: result.sync,
-        })
-      } finally {
-        signal?.removeEventListener('abort', abort)
+        switch (params.command) {
+          case 'clone': {
+            if (!params.url) throw new Error('url is required for clone')
+            await git.clone({ url: params.url, dir, ref: params.ref, headers: authHeaders })
+            signal?.throwIfAborted()
+            return text(`Cloned ${params.url}${params.ref ? ` (ref ${params.ref})` : ''} into ${dir}`)
+          }
+          case 'status': {
+            const entries = await git.status({ dir })
+            signal?.throwIfAborted()
+            return text(entries)
+          }
+          case 'add': {
+            const paths = params.paths ?? ['.']
+            await git.add({ dir, paths })
+            signal?.throwIfAborted()
+            return text(`Staged ${paths.join(', ')}`)
+          }
+          case 'commit': {
+            if (!params.message) throw new Error('message is required for commit')
+            const result = await git.commit({ message: params.message, dir })
+            signal?.throwIfAborted()
+            return text({ oid: result.oid })
+          }
+          case 'push': {
+            const result = await git.push({ dir, remote: params.remote ?? 'origin', ref: params.ref, force: params.force, headers: authHeaders })
+            signal?.throwIfAborted()
+            return text(result)
+          }
+          case 'pull': {
+            await git.pull({ dir, remote: params.remote ?? 'origin', ref: params.ref, headers: authHeaders })
+            signal?.throwIfAborted()
+            return text(`Pulled into ${dir}`)
+          }
+          case 'log': {
+            const commits = await git.log({ dir })
+            signal?.throwIfAborted()
+            return text(commits)
+          }
+        }
+      } catch (error) {
+        throw new Error(`git ${params.command} failed: ${error instanceof Error ? error.message : String(error)}`)
       }
+      throw new Error(`Unknown git command: ${params.command}`)
     },
   }
 
-  const javascriptTool: AgentHarnessTool<undefined, typeof javascriptSchema> = {
-    name: 'javascript',
-    label: 'Run JavaScript',
-    description: 'Run an ECMAScript module in Computer\'s isolated Worker JavaScript backend. Supports structured input/results, durable imports, node:fs/promises, ws:git, and ws:artifacts.',
-    parameters: javascriptSchema,
-    execute: async (_id, { source, input, cwd }, signal) => {
-      signal?.throwIfAborted()
-      const directory = requireWorkspacePath(cwd ?? WORKSPACE_ROOT)
-      using handle = await workspace.runtime.exec(source, {
-        backend: 'javascript',
-        cwd: directory,
-        encoding: 'utf8',
-        input: input as WorkspaceRuntimeValue | undefined,
-      })
-      const abort = () => void handle.kill('SIGTERM').catch(() => undefined)
-      signal?.addEventListener('abort', abort, { once: true })
-      try {
-        const result = await handle.result()
-        signal?.throwIfAborted()
-        return text({
-          status: result.status,
-          exitCode: result.exitCode,
-          stdout: result.stdout,
-          stderr: result.stderr,
-          value: result.value,
-          pushed: result.pushed,
-          pulled: result.pulled,
-          skipped: result.skipped,
-          sync: result.sync,
-        })
-      } finally {
-        signal?.removeEventListener('abort', abort)
-      }
-    },
-  }
-
-  const publishTool: AgentHarnessTool<undefined, typeof publishSchema> = {
-    name: 'publish',
-    label: 'Publish file',
-    description: 'Publish a workspace file with Computer Assets and return an expiring URL.',
-    parameters: publishSchema,
-    executionMode: 'sequential',
-    execute: async (_id, { path, expiresAfterMs }, signal) => {
-      signal?.throwIfAborted()
-      requireWorkspacePath(path)
-      if (!workspace.assets) throw new Error('Computer Assets is not configured.')
-      const url = await workspace.assets.share(path, { expiresAfter: expiresAfterMs ?? 3_600_000 })
-      signal?.throwIfAborted()
-      return text({ path, url })
-    },
-  }
-
-  const artifactsTool: AgentHarnessTool<undefined, typeof artifactsSchema> = {
-    name: 'artifacts',
-    label: 'Manage artifacts',
-    description: 'Manage session-scoped Cloudflare Artifact repositories through Computer\'s native CLI.',
-    parameters: artifactsSchema,
-    executionMode: 'sequential',
-    execute: async (_id, { argv }, signal) => {
-      signal?.throwIfAborted()
-      const result = await workspace.artifacts.cli({ argv })
-      signal?.throwIfAborted()
-      return text(result)
-    },
-  }
-
-  return [readTool, writeTool, editTool, listTool, findTool, grepTool, execTool, javascriptTool, publishTool, artifactsTool]
-}
-
-export function createInitializeAppTool(initialize: () => Promise<void>): AgentHarnessTool<undefined> {
-  return {
-    name: 'initialize_app',
-    label: 'Initialize app',
-    description: 'Install the pinned React and Cloudflare starter into this session. Call this only when the user asks to build an app.',
-    parameters: Type.Object({}),
-    executionMode: 'sequential',
-    execute: async (_id, _params, signal) => {
-      signal?.throwIfAborted()
-      await initialize()
-      signal?.throwIfAborted()
-      return text('Initialized the React and Cloudflare app workspace.')
-    },
-  }
+  return [readTool, writeTool, editTool, listTool, findTool, grepTool, gitTool]
 }
 
 export function createSessionSearchTool(

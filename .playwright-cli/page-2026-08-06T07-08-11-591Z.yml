@@ -1,0 +1,46 @@
+- main [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - link "Back to sessions" [ref=e5] [cursor=pointer]:
+        - /url: /
+      - generic [ref=e8]: π
+      - generic [ref=e9]:
+        - paragraph [ref=e10]: SESSION / 48684512-c86b-4307-9867-a9655154ea43
+        - heading [level=1] [ref=e11]:
+          - button "UNTITLED / 48684512" [disabled] [ref=e12] [cursor=pointer]
+        - paragraph [ref=e13]: LOADING
+    - generic [ref=e14]: WORKER ONLINE
+  - generic [ref=e16]:
+    - tabpanel "CHAT" [ref=e17]:
+      - generic [ref=e18]:
+        - generic [ref=e19]: ACTIVE / UNTITLED / 48684512
+        - generic [ref=e20]: 000 MSG
+      - log [ref=e21]:
+        - generic [ref=e22]: Pi is ready.
+        - generic [ref=e23]:
+          - generic [ref=e24]: π
+          - generic [ref=e25]:
+            - heading "A coding agent with no server." [level=2] [ref=e26]
+            - paragraph [ref=e27]: Pi’s agent loop is running inside a Cloudflare Durable Object. Give it a file to create.
+            - button "TRY A FILE OPERATION" [ref=e28] [cursor=pointer]
+      - generic [ref=e29]:
+        - generic [ref=e30]: INSTRUCTION
+        - textbox "INSTRUCTION" [disabled] [ref=e31]:
+          - /placeholder: Ask Pi to inspect, create, or edit a file...
+        - button "LOADING ↗" [disabled] [ref=e32]:
+          - generic [ref=e33]:
+            - text: LOADING
+            - generic [ref=e34]: ↗
+    - generic [ref=e35]:
+      - tablist "Inspector view" [ref=e36]:
+        - tab "Files inspector" [selected] [ref=e37] [cursor=pointer]: FILES
+        - tab "Tree inspector" [ref=e40] [cursor=pointer]: TREE
+      - tabpanel "FILES" [ref=e43]:
+        - generic [ref=e44]:
+          - generic [ref=e45]:
+            - generic [ref=e46]: DURABLE STORAGE
+            - strong [ref=e47]: WORKSPACE FILES
+          - button "Refresh files" [disabled] [ref=e48]
+        - generic "Workspace files" [ref=e54]:
+          - paragraph [ref=e55]: SCANNING WORKSPACE...
+        - generic [ref=e56]: SELECT A FILE TO INSPECT

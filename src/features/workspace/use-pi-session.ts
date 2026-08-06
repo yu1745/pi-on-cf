@@ -6,7 +6,7 @@ import {
   PI_AGENT_PREFIX,
   PI_REGISTRY_INSTANCE,
   PI_REGISTRY_NAME,
-  type AppStatus,
+  type ModelOption,
   type PiRegistryContract,
   type PiSessionContract,
   type PiStreamEvent,
@@ -28,7 +28,8 @@ export function usePiSession(sessionId: string) {
   const [isReady, setIsReady] = useState(false)
   const [error, setError] = useState('')
   const [files, setFiles] = useState<WorkspaceFile[]>([])
-  const [appStatus, setAppStatus] = useState<AppStatus | null>(null)
+  const [models, setModels] = useState<ModelOption[]>([])
+  const [selectedModel, setSelectedModel] = useState('')
   const [selectedPath, setSelectedPath] = useState('')
   const [fileContent, setFileContent] = useState('')
   const [fileContentPath, setFileContentPath] = useState('')
@@ -39,7 +40,6 @@ export function usePiSession(sessionId: string) {
   const [desktopPanel, setDesktopPanel] = useState<'files' | 'tree'>('files')
   const transcriptRef = useRef<HTMLDivElement>(null)
   const filesRequestRef = useRef(0)
-  const appRequestRef = useRef(0)
   const sessionRequestRef = useRef(0)
   const promptRequestRef = useRef(0)
   const actionRequestRef = useRef(0)
@@ -88,13 +88,15 @@ export function usePiSession(sessionId: string) {
     }
   }, [agent.stub])
 
-  const refreshApp = useCallback(async () => {
-    const request = ++appRequestRef.current
+  const refreshModels = useCallback(async () => {
     try {
-      const status = await agent.stub.getAppStatus()
-      if (request === appRequestRef.current) setAppStatus(status)
+      const result = await agent.stub.listModels()
+      setModels(result.models)
+      const defaultId = result.selected || result.models.find((m) => m.default)?.id || result.models[0]?.id || ''
+      setSelectedModel((current) => current || defaultId)
     } catch (caught) {
-      if (request === appRequestRef.current) setError(caught instanceof Error ? caught.message : String(caught))
+      // Non-fatal: model picker just stays empty.
+      console.error('Could not load models', caught)
     }
   }, [agent.stub])
 
@@ -130,7 +132,6 @@ export function usePiSession(sessionId: string) {
     setTranscript(emptyTranscript)
     setError('')
     setFiles([])
-    setAppStatus(null)
     setSelectedPath('')
     setFileContent('')
     setFileContentPath('')
@@ -140,18 +141,17 @@ export function usePiSession(sessionId: string) {
     setDesktopPanel('files')
     void refreshSession()
     void refreshFiles()
-    void refreshApp()
+    void refreshModels()
     return () => {
       sessionRequestRef.current += 1
       filesRequestRef.current += 1
-      appRequestRef.current += 1
       promptRequestRef.current += 1
       actionRequestRef.current += 1
       if (streamFrameRef.current !== null) cancelAnimationFrame(streamFrameRef.current)
       streamFrameRef.current = null
       streamEventsRef.current = []
     }
-  }, [refreshApp, refreshFiles, refreshSession, sessionId])
+  }, [refreshFiles, refreshSession, sessionId])
 
   const selectedFileMtime = files.find((file) => file.path === selectedPath)?.mtime
   useEffect(() => {
@@ -192,7 +192,7 @@ export function usePiSession(sessionId: string) {
     streamEventsRef.current = []
     setTranscript((current) => ({ ...current, entries: [...current.entries, { id: crypto.randomUUID(), type: 'message', role: 'user', text: prompt }] }))
     try {
-      await agent.call('prompt', [prompt], {
+      await agent.call('prompt', [prompt, selectedModel || undefined], {
         stream: {
           onChunk: (chunk) => {
             if (request !== promptRequestRef.current) return
@@ -209,7 +209,7 @@ export function usePiSession(sessionId: string) {
       if (request === promptRequestRef.current) {
         flushStreamEvents()
         setIsRunning(false)
-        await Promise.all([refreshSession(), refreshFiles(), refreshApp()])
+        await Promise.all([refreshSession(), refreshFiles()])
       }
     }
   }
@@ -227,6 +227,11 @@ export function usePiSession(sessionId: string) {
     } finally {
       if (request === actionRequestRef.current) setPendingAction('')
     }
+  }
+
+  async function selectModel(modelId: string) {
+    setSelectedModel(modelId)
+    try { await agent.stub.setModel(modelId) } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)) }
   }
 
   function downloadSelectedFile() {
@@ -247,15 +252,10 @@ export function usePiSession(sessionId: string) {
   return {
     abort: async () => { try { await agent.stub.abort() } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)) } },
     activeTextId: transcript.activeTextId,
-    appStatus,
     branch,
     canDownload: Boolean(selectedPath && selectedPath === fileContentPath && !fileError),
     compact: (focus?: string) => runAction('compact', () => agent.stub.compact(focus)),
     desktopPanel,
-    deploy: () => runAction('deploy', async () => {
-      await agent.stub.deployApp()
-      await refreshApp()
-    }),
     downloadSelectedFile,
     entries: transcript.entries,
     error,
@@ -270,16 +270,18 @@ export function usePiSession(sessionId: string) {
     isReady,
     isRunning,
     mobileView,
+    models,
     navigateTree: (entryId: string) => runAction('navigate', async () => {
       const result = await agent.stub.navigateTree(entryId)
       if (result.editorText) setInput(result.editorText)
     }),
     overview,
     pendingAction,
-    previewUrl: `/__preview/${sessionId}/`,
     refreshFiles,
     rename: (name: string) => runAction('rename', () => agent.stub.setSessionName(name)),
     selectedPath,
+    selectModel,
+    selectedModel,
     setDesktopPanel,
     setEntryLabel: (entryId: string, label?: string) => runAction('label', () => agent.stub.setEntryLabel(entryId, label)),
     setInput,

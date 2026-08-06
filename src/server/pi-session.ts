@@ -7,10 +7,6 @@ import {
   type WorkspaceOptions,
   type WorkspaceStub,
 } from '@cloudflare/computer'
-import { createAssets } from '@cloudflare/computer/assets'
-import { CloudflareContainerBackend, withWorkspaceContainer } from '@cloudflare/computer/backends/container'
-import { WorkerJavaScriptBackend } from '@cloudflare/computer/backends/worker-javascript'
-import { WorkerShellBackend } from '@cloudflare/computer/backends/worker-shell'
 import { createGitClient } from '@cloudflare/computer/git'
 import { createCloudflareObserver } from '@cloudflare/computer/observe/cloudflare'
 import { tracing } from 'cloudflare:workers'
@@ -27,8 +23,6 @@ import { Agent, callable } from 'agents'
 import type { StreamingResponse } from 'agents'
 import type {
   ApplyMemoryExtractionInput,
-  AppDeploymentSummary,
-  AppStatus,
   CompactionSettings,
   Memory,
   MemoryKind,
@@ -41,21 +35,14 @@ import type {
   WorkspaceFile,
   WorkspaceFileContent,
 } from '../shared/pi-contract'
-import { createPiHarness, getMemoryModel, type PiHarness } from './create-pi-harness'
+import { createPiHarness, getMemoryModel, listModelOptions, type ModelOption, type PiHarness } from './create-pi-harness'
 import { extractMemoryOperations, type MemorySourceEntry } from './memory-extractor'
 import { createMemoryTool } from './memory-tools'
 import { prepareManualCompaction } from './manual-compaction'
 import { PiSessionStorage, type PiSessionMetadata } from './pi-session-storage'
 import { toPiStreamEvent } from './stream-events'
 import { PI_REGISTRY_INSTANCE } from '../shared/pi-contract'
-import { createInitializeAppTool, createSessionSearchTool, createWorkspaceTools } from './workspace-tools'
-import { buildApp } from './apps/build-app'
-import { deployApp as deployBuiltApp } from './apps/deploy-app'
-import { previewApp } from './apps/preview-runtime'
-import { createSourceSnapshot } from './apps/source'
-import { TemplateRepository } from './apps/template-repository'
-import type { BuiltApp, TemplateSourceSummary } from './apps/types'
-import { WorkersClient } from './apps/workers-client'
+import { createSessionSearchTool, createWorkspaceTools } from './workspace-tools'
 import type { ComputerWorkspace } from './computer-workspace'
 import { migrateLegacyShellWorkspace } from './legacy-workspace-migration'
 import { WORKSPACE_ROOT, workspacePath } from './workspace-root'
@@ -66,15 +53,12 @@ type SessionExport = {
   entries: SessionTreeEntry[]
   compaction: CompactionSettings
   files: Array<{ path: string; content: string; encoding?: 'base64' }>
-  appTemplate?: TemplateSourceSummary
 }
 
 const WORKSPACE_PAGE_SIZE = 250
 const MEMORY_EXTRACTION_CURSOR = 'memoryExtractionRevision'
 const MEMORY_EXTRACTION_BATCH_CHARS = 30_000
 const MEMORY_SOURCE_ENTRY_CHARS = 12_000
-const APP_TEMPLATE_SETTING = 'appTemplate'
-const APP_DEPLOYMENT_SETTING = 'appDeployment'
 const COMPUTER_WORKSPACE_MIGRATION_SETTING = 'computerWorkspaceMigration'
 
 type MemoryRegistry = {
@@ -90,8 +74,8 @@ type MemoryRegistry = {
 type ComputerEnv = Env & {
   COMPUTER_R2?: R2Bucket
   COMPUTER_R2_BUCKET?: string
-  R2_ACCESS_KEY_ID?: string
-  R2_SECRET_ACCESS_KEY?: string
+  GIT_TOKEN?: string
+  GIT_USERNAME?: string
 }
 
 const SYNC_RETRY_PREFIX = 'computer:sync-retry:'
@@ -114,74 +98,28 @@ class DurableSyncRetryScheduler implements SyncRetryScheduler {
   }
 }
 
-class PiAgentBase extends Agent<Env> {}
-const PiSessionBase = withWorkspaceContainer(PiAgentBase)
-
-export class PiSession extends PiSessionBase {
+export class PiSession extends Agent<Env> {
   private active = false
   private harness?: PiHarness
   private memoryExtraction?: Promise<void>
-  private builtApp?: BuiltApp
+  private selectedModelId?: string
   private readonly sessionStorage = new PiSessionStorage(this.ctx.storage)
   private readonly session = new Session(this.sessionStorage)
-  private readonly containerBackend = new CloudflareContainerBackend({
-    id: 'container',
-    container: () => this,
-    workspace: { binding: 'PiSession', id: this.ctx.id.toString() },
-  })
   private readonly retryScheduler = new DurableSyncRetryScheduler(this.ctx.storage)
   private readonly workspace = new Workspace({
     storage: this.ctx.storage as unknown as DurableObjectStorageLike,
     sessionId: this.ctx.id.toString(),
     waitUntil: this.ctx.waitUntil.bind(this.ctx),
-    backends: [
-      new WorkerShellBackend({
-        id: 'shell',
-        loader: this.env.APP_LOADER,
-        workspace: { binding: 'PiSession', id: this.ctx.id.toString() },
-        ctx: this.ctx,
-      }),
-      new WorkerJavaScriptBackend({
-        id: 'javascript',
-        loader: this.env.APP_LOADER,
-        root: WORKSPACE_ROOT,
-        allowGitNetwork: true,
-        allowArtifactNetwork: true,
-      }),
-      this.containerBackend,
-    ],
+    backends: [],
     git: createGitClient(),
     defaultGitIdentity: { name: 'Pi', email: 'pi@cloudflare.invalid' },
-    artifacts: { binding: this.env.APP_ARTIFACTS },
     mounts: computerMounts(this.env as ComputerEnv),
-    assets: computerAssets(this.env as ComputerEnv),
     observer: createCloudflareObserver({ tracing }),
     retryScheduler: this.retryScheduler,
     useThink: true,
   }) as ComputerWorkspace
 
-  override fetch(request: Request): Promise<Response> {
-    if (new URL(request.url).pathname === '/ws') return this.containerBackend.handleFetch(request)
-    return super.fetch(request)
-  }
-
-  override async alarm(): Promise<void> {
-    await super.alarm()
-    const intent = await this.retryScheduler.get('container')
-    if (!intent) return
-    if (intent.notBefore > Date.now()) {
-      const alarm = await this.ctx.storage.getAlarm()
-      if (alarm === null || intent.notBefore < alarm) await this.ctx.storage.setAlarm(intent.notBefore)
-      return
-    }
-    const outcome = await this.workspace.retryPendingSync('container')
-    if (outcome.status === 'pending' || outcome.status === 'exhausted') {
-      console.error('Computer container synchronization did not complete', outcome)
-    }
-  }
-
   async onStart(): Promise<void> {
-    if (this.ctx.container) await this.ctx.container.setInactivityTimeout(5 * 60_000)
     if (!this.sessionStorage.getSetting<boolean>(COMPUTER_WORKSPACE_MIGRATION_SETTING)) {
       await migrateLegacyShellWorkspace(
         this.ctx.storage as unknown as DurableObjectStorageLike,
@@ -351,56 +289,29 @@ export class PiSession extends PiSessionBase {
   }
 
   @callable()
-  async initializeApp(): Promise<AppStatus> {
-    return this.withExclusiveOperation(async () => {
-      await this.initializeAppTemplate()
-      return this.getAppStatus()
-    })
+  async listModels(): Promise<{ models: ModelOption[]; selected?: string }> {
+    return { models: listModelOptions(this.env), selected: this.selectedModelId }
   }
 
   @callable()
-  async getAppStatus(): Promise<AppStatus> {
-    if (!this.sessionStorage.getSetting<TemplateSourceSummary>(APP_TEMPLATE_SETTING)) {
-      return { initialized: false, sourceHash: '', dirty: false }
-    }
-    const source = await createSourceSnapshot(this.workspace)
-    const deployment = this.sessionStorage.getSetting<AppDeploymentSummary>(APP_DEPLOYMENT_SETTING)
-    return { initialized: true, sourceHash: source.hash, dirty: deployment?.sourceHash !== source.hash, deployment }
-  }
-
-  @callable()
-  async deployApp(): Promise<AppDeploymentSummary> {
-    return this.withExclusiveOperation(async () => {
-      this.requireInitializedApp()
-      const source = await createSourceSnapshot(this.workspace)
-      const built = await this.build(source)
-      const deployment = await deployBuiltApp({
-        env: this.env,
-        sessionId: this.sessionStorage.getMetadataSync().id,
-        workspace: this.workspace,
-        source,
-        built,
-        template: this.appTemplate(source.files.length, source.totalBytes),
-      })
-      this.sessionStorage.setSetting(APP_DEPLOYMENT_SETTING, deployment)
-      return deployment
-    })
-  }
-
-  async preview(request: Request): Promise<Response> {
-    if (!this.sessionStorage.getSetting<TemplateSourceSummary>(APP_TEMPLATE_SETTING)) {
-      return new Response('This session does not have an app. Initialize one first.', { status: 409 })
-    }
-    return this.withExclusiveOperation(async () => {
-      const source = await createSourceSnapshot(this.workspace)
-      return previewApp(request, await this.build(source), this.env.APP_LOADER)
-    })
+  async setModel(modelId: string): Promise<{ selected: string }> {
+    const options = listModelOptions(this.env)
+    if (!options.some((o) => o.id === modelId)) throw new Error(`Unknown model: ${modelId}`)
+    this.selectedModelId = modelId
+    this.harness = undefined
+    return { selected: modelId }
   }
 
   @callable({ streaming: true })
-  async prompt(stream: StreamingResponse, prompt: string): Promise<void> {
-    if (!this.env.CLOUDFLARE_ACCOUNT_ID || !this.env.AI_GATEWAY_TOKEN) {
-      throw new Error('CLOUDFLARE_ACCOUNT_ID and AI_GATEWAY_TOKEN must be configured.')
+  async prompt(stream: StreamingResponse, prompt: string, modelId?: string): Promise<void> {
+    if (!this.env.CLOUDFLARE_ACCOUNT_ID || !this.env.AI_API_KEY) {
+      if (!this.env.CF_API_TOKEN) {
+        throw new Error('No LLM credentials configured. Set AI_API_KEY (env provider) or CF_API_TOKEN (Workers AI).')
+      }
+    }
+    if (modelId && modelId !== this.selectedModelId) {
+      this.selectedModelId = modelId
+      this.harness = undefined
     }
     prompt = validPrompt(prompt)
     if (this.active) throw new Error('Pi is already running in this workspace.')
@@ -465,10 +376,8 @@ export class PiSession extends PiSessionBase {
         if (file.encoding === 'base64') await this.workspace.fs.writeFile(path, decodeBase64(file.content))
         else await this.workspace.writeFile(path, file.content)
       }
-      if (snapshot.appTemplate) this.sessionStorage.setSetting(APP_TEMPLATE_SETTING, snapshot.appTemplate)
       if (metadata?.name) await this.session.appendSessionName(metadata.name)
       this.harness = undefined
-      this.builtApp = undefined
       return this.getOverview()
     })
   }
@@ -480,17 +389,6 @@ export class PiSession extends PiSessionBase {
       await harness.waitForIdle()
     }
     this.active = true
-    const deployment = this.sessionStorage.getSetting<AppDeploymentSummary>(APP_DEPLOYMENT_SETTING)
-    if (deployment) {
-      await Promise.all([
-        new WorkersClient({
-          accountId: this.env.CLOUDFLARE_ACCOUNT_ID,
-          token: deploymentToken(this.env),
-        }).deleteWorker(deployment.workerName),
-        this.workspace.artifacts.delete('app'),
-        this.env.APP_ARTIFACTS.delete(`pi-app-${this.sessionStorage.getMetadataSync().id}`),
-      ])
-    }
     for (const entry of await this.workspace.readDir('/')) {
       if (this.isMountedPath(entry.path)) continue
       await this.workspace.rm(entry.path, { recursive: true, force: true })
@@ -512,15 +410,14 @@ export class PiSession extends PiSessionBase {
     const sessionId = this.sessionStorage.getMetadataSync().id
     this.harness ??= createPiHarness({
       env: this.env,
-      sessionId,
       storage: this.sessionStorage,
       tools: [
-        ...createWorkspaceTools(this.workspace),
-        createInitializeAppTool(() => this.initializeAppTemplate()),
+        ...createWorkspaceTools(this.workspace, { gitAuth: gitAuthConfig(this.env as ComputerEnv) }),
         createSessionSearchTool(registry),
         createMemoryTool(registry, sessionId),
       ],
       memory: registry,
+      modelId: this.selectedModelId,
     })
     return this.harness
   }
@@ -581,29 +478,6 @@ export class PiSession extends PiSessionBase {
       entries,
       compaction: this.compactionSettings(),
       files: contents,
-      appTemplate: this.sessionStorage.getSetting<TemplateSourceSummary>(APP_TEMPLATE_SETTING),
-    }
-  }
-
-  private async build(source: Awaited<ReturnType<typeof createSourceSnapshot>>): Promise<BuiltApp> {
-    if (this.builtApp?.sourceHash === source.hash) return this.builtApp
-    this.builtApp = await buildApp(source)
-    return this.builtApp
-  }
-
-  private async initializeAppTemplate(): Promise<void> {
-    if (this.sessionStorage.getSetting<TemplateSourceSummary>(APP_TEMPLATE_SETTING)) return
-    const template = await new TemplateRepository(this.workspace).install({
-      repository: this.env.APP_TEMPLATE_REPOSITORY,
-      commit: this.env.APP_TEMPLATE_COMMIT,
-    })
-    this.sessionStorage.setSetting(APP_TEMPLATE_SETTING, template)
-    this.builtApp = undefined
-  }
-
-  private requireInitializedApp(): void {
-    if (!this.sessionStorage.getSetting<TemplateSourceSummary>(APP_TEMPLATE_SETTING)) {
-      throw new Error('This session does not have an app. Initialize one first.')
     }
   }
 
@@ -612,15 +486,6 @@ export class PiSession extends PiSessionBase {
       await new Promise((resolve) => setTimeout(resolve, 25))
     }
     if (!this.sessionStorage.isInitialized()) throw new Error('Session has not been initialized.')
-  }
-
-  private appTemplate(fileCount: number, totalBytes: number): TemplateSourceSummary {
-    return this.sessionStorage.getSetting<TemplateSourceSummary>(APP_TEMPLATE_SETTING) ?? {
-      repository: this.env.APP_TEMPLATE_REPOSITORY,
-      commit: this.env.APP_TEMPLATE_COMMIT,
-      fileCount,
-      totalBytes,
-    }
   }
 
   private async listAllWorkspaceFiles() {
@@ -685,7 +550,8 @@ export class PiSession extends PiSessionBase {
   }
 
   private async extractNextMemoryBatch(): Promise<void> {
-    if (!this.env.CLOUDFLARE_ACCOUNT_ID || !this.env.AI_GATEWAY_TOKEN) return
+    if (!this.env.CLOUDFLARE_ACCOUNT_ID) return
+    if (!this.env.AI_API_KEY && !this.env.CF_API_TOKEN) return
     const cursor = this.sessionStorage.getSetting<number>(MEMORY_EXTRACTION_CURSOR) ?? 0
     const pending = this.sessionStorage.getEntriesWithSeq().filter(({ seq }) => seq > cursor)
     if (pending.length === 0) return
@@ -727,33 +593,17 @@ export class PiSession extends PiSessionBase {
   }
 }
 
+function gitAuthConfig(env: ComputerEnv): { username: string; password: string } | undefined {
+  const token = env.GIT_TOKEN
+  if (!token) return undefined
+  return { username: env.GIT_USERNAME || 'oauth2', password: token }
+}
+
 function computerMounts(env: ComputerEnv): WorkspaceOptions['mounts'] {
   if (!env.COMPUTER_R2) return undefined
   return {
     [`${WORKSPACE_ROOT}/reference`]: mountR2Bucket(env.COMPUTER_R2, { prefix: 'reference/', mode: 'read-only' }),
   }
-}
-
-function computerAssets(env: ComputerEnv): WorkspaceOptions['assets'] {
-  if (!env.COMPUTER_R2 || !env.COMPUTER_R2_BUCKET || !env.CLOUDFLARE_ACCOUNT_ID || !env.R2_ACCESS_KEY_ID || !env.R2_SECRET_ACCESS_KEY) {
-    return undefined
-  }
-  return (workspace) => createAssets({
-    ws: workspace,
-    bucket: env.COMPUTER_R2!,
-    s3: {
-      bucket: env.COMPUTER_R2_BUCKET!,
-      accountId: env.CLOUDFLARE_ACCOUNT_ID,
-      accessKeyId: env.R2_ACCESS_KEY_ID,
-      secretAccessKey: env.R2_SECRET_ACCESS_KEY,
-    },
-  })
-}
-
-function deploymentToken(env: Env): string {
-  const token = (env as Env & { WORKERS_DEPLOY_API_TOKEN?: string }).WORKERS_DEPLOY_API_TOKEN
-  if (!token) throw new Error('WORKERS_DEPLOY_API_TOKEN must be configured.')
-  return token
 }
 
 function validPrompt(prompt: string): string {

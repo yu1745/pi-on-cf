@@ -1,0 +1,59 @@
+- main [ref=f1e59]:
+  - generic [ref=f1e60]:
+    - generic [ref=f1e61]:
+      - link "Back to sessions" [ref=f1e62] [cursor=pointer]:
+        - /url: /
+      - generic [ref=f1e65]: π
+      - generic [ref=f1e66]:
+        - paragraph [ref=f1e67]: SESSION / b7c079d1-1d77-46b3-94e1-354ac7cf500b
+        - heading [level=1] [ref=f1e68]:
+          - button "UNTITLED / b7c079d1" [ref=f1e69] [cursor=pointer]
+        - paragraph [ref=f1e70]: NEW
+    - generic [ref=f1e71]:
+      - combobox "Model" [ref=f1e72]:
+        - option "★ MiniMax-M3"
+        - option "@cf/meta/llama-4-scout-17b-16e-instruct"
+        - option "@cf/openai/gpt-oss-120b"
+        - option "@cf/openai/gpt-oss-20b"
+        - option "@cf/qwen/qwen3-30b-a3b-fp8" [selected]
+        - option "@cf/qwen/qwq-32b"
+        - option "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b"
+      - text: WORKER ONLINE
+  - generic [ref=f1e74]:
+    - tabpanel "CHAT" [ref=f1e75]:
+      - generic [ref=f1e76]:
+        - generic [ref=f1e77]: ACTIVE / UNTITLED / B7C079D1
+        - generic [ref=f1e78]: 002 MSG
+      - log [ref=f1e79]:
+        - generic [ref=f1e80]: "Pi replied: <think>The user is asking a simple math question: 3+5. They want just the number as the answer.</think> 8"
+        - article [ref=f1e124]:
+          - generic [ref=f1e125]: YOU
+          - generic [ref=f1e126]: What is 3+5? Reply with just the number.
+        - article [ref=f1e127]:
+          - generic [ref=f1e128]: PI
+          - generic [ref=f1e130]:
+            - paragraph [ref=f1e131]: "The user is asking a simple math question: 3+5. They want just the number as the answer."
+            - paragraph [ref=f1e132]: "8"
+      - generic [ref=f1e87]:
+        - generic [ref=f1e88]: INSTRUCTION
+        - textbox "INSTRUCTION" [ref=f1e89]:
+          - /placeholder: Ask Pi to inspect, create, or edit a file...
+        - button "EXECUTE ↗" [disabled] [ref=f1e133]:
+          - generic [ref=f1e91]:
+            - text: EXECUTE
+            - generic [ref=f1e92]: ↗
+    - generic [ref=f1e93]:
+      - tablist "Inspector view" [ref=f1e94]:
+        - tab "Files inspector" [selected] [ref=f1e95] [cursor=pointer]: FILES
+        - tab "Tree inspector" [ref=f1e98] [cursor=pointer]: TREE
+      - tabpanel "FILES" [ref=f1e101]:
+        - generic [ref=f1e102]:
+          - generic [ref=f1e103]:
+            - generic [ref=f1e104]: DURABLE STORAGE
+            - strong [ref=f1e105]: WORKSPACE FILES
+          - button "Refresh files" [ref=f1e106] [cursor=pointer]
+        - generic "Workspace files" [ref=f1e112]:
+          - generic [ref=f1e134]:
+            - strong [ref=f1e137]: NO FILES YET
+            - generic [ref=f1e138]: Ask Pi to create one.
+        - generic [ref=f1e118]: SELECT A FILE TO INSPECT
