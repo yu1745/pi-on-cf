@@ -28,7 +28,8 @@
     "required": [
       "CLOUDFLARE_ACCOUNT_ID",
       "AI_API_KEY",
-      "CF_API_TOKEN"
+      "CF_API_TOKEN",
+      "GIT_TOKEN"
     ]
   },
   "durable_objects": {

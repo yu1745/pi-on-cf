@@ -1,7 +1,8 @@
 import type { AgentHarnessTool } from '@earendil-works/pi-agent-core'
 import { Type } from 'typebox'
 import type { SessionSearchResult } from '../shared/pi-contract'
-import type { ComputerWorkspace } from './computer-workspace'
+import type { MemoryWorkspace } from './memory-workspace'
+import type { MemoryGitClient } from './memory-git'
 import { requireWorkspacePath, WORKSPACE_ROOT } from './workspace-root'
 
 type RegistrySearch = {
@@ -25,7 +26,7 @@ export type CreateWorkspaceToolsOptions = {
   gitAuth?: { username: string; password: string }
 }
 
-export function createWorkspaceTools(workspace: ComputerWorkspace, options?: CreateWorkspaceToolsOptions) {
+export function createWorkspaceTools(workspace: MemoryWorkspace, options?: CreateWorkspaceToolsOptions) {
   const gitAuth = options?.gitAuth
   const authHeaders = gitAuth ? { Authorization: `Basic ${btoa(`${gitAuth.username}:${gitAuth.password}`)}` } : undefined
 
@@ -57,7 +58,7 @@ export function createWorkspaceTools(workspace: ComputerWorkspace, options?: Cre
       Type.Literal('pull'),
       Type.Literal('log'),
     ], { description: 'Git subcommand to run' }),
-    url: Type.Optional(Type.String({ description: 'Repository URL for clone. HTTPS only.' })),
+    url: Type.Optional(Type.String({ description: 'Repository URL for clone, e.g. https://github.com/owner/repo. The https:// prefix is added automatically if omitted.' })),
     message: Type.Optional(Type.String({ description: 'Commit message for commit' })),
     paths: Type.Optional(Type.Array(Type.String(), { description: 'Paths to stage for add, relative to dir. Defaults to ["."]' })),
     dir: Type.Optional(Type.String({ description: `Working-tree directory, defaults to ${WORKSPACE_ROOT}` })),
@@ -147,7 +148,7 @@ export function createWorkspaceTools(workspace: ComputerWorkspace, options?: Cre
       signal?.throwIfAborted()
       if (pattern.startsWith('/')) requireWorkspacePath(pattern)
       const files = (await workspace.glob(pattern)).filter((entry) => entry.type === 'file')
-      const result = (await Promise.all(files.map((file) => workspace.fs.grep(query, file.path)))).flat()
+      const result = (await Promise.all(files.map((file) => workspace.grep(query, file.path)))).flat()
       signal?.throwIfAborted()
       return text(result)
     },
@@ -162,14 +163,18 @@ export function createWorkspaceTools(workspace: ComputerWorkspace, options?: Cre
     execute: async (_id, params, signal) => {
       signal?.throwIfAborted()
       const dir = requireWorkspacePath(params.dir ?? WORKSPACE_ROOT)
-      const git = workspace.git
+      const git = workspace.git as MemoryGitClient
       try {
         switch (params.command) {
           case 'clone': {
             if (!params.url) throw new Error('url is required for clone')
-            await git.clone({ url: params.url, dir, ref: params.ref, headers: authHeaders })
+            // isomorphic-git needs an absolute URL with a protocol.
+            // Accept shorthand like "github.com/owner/repo" and add the scheme.
+            let cloneUrl = params.url.trim()
+            if (!/^https?:\/\//.test(cloneUrl)) cloneUrl = `https://${cloneUrl}`
+            await git.clone({ url: cloneUrl, dir, ref: params.ref, headers: authHeaders })
             signal?.throwIfAborted()
-            return text(`Cloned ${params.url}${params.ref ? ` (ref ${params.ref})` : ''} into ${dir}`)
+            return text(`Cloned ${cloneUrl}${params.ref ? ` (ref ${params.ref})` : ''} into ${dir}`)
           }
           case 'status': {
             const entries = await git.status({ dir })

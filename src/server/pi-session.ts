@@ -1,16 +1,4 @@
 import {
-  R2Bucket as mountR2Bucket,
-  type DurableObjectStorageLike,
-  type SyncRetryIntent,
-  type SyncRetryScheduler,
-  Workspace,
-  type WorkspaceOptions,
-  type WorkspaceStub,
-} from '@cloudflare/computer'
-import { createGitClient } from '@cloudflare/computer/git'
-import { createCloudflareObserver } from '@cloudflare/computer/observe/cloudflare'
-import { tracing } from 'cloudflare:workers'
-import {
   DEFAULT_COMPACTION_SETTINGS,
   Session,
   compact as compactSession,
@@ -43,8 +31,8 @@ import { PiSessionStorage, type PiSessionMetadata } from './pi-session-storage'
 import { toPiStreamEvent } from './stream-events'
 import { PI_REGISTRY_INSTANCE } from '../shared/pi-contract'
 import { createSessionSearchTool, createWorkspaceTools } from './workspace-tools'
-import type { ComputerWorkspace } from './computer-workspace'
-import { migrateLegacyShellWorkspace } from './legacy-workspace-migration'
+import { MemoryGitClient } from './memory-git'
+import { MemoryWorkspace } from './memory-workspace'
 import { WORKSPACE_ROOT, workspacePath } from './workspace-root'
 
 type InitializeMetadata = Pick<SessionSummary, 'id' | 'createdAt' | 'updatedAt' | 'lineage'> & { name?: string }
@@ -59,7 +47,6 @@ const WORKSPACE_PAGE_SIZE = 250
 const MEMORY_EXTRACTION_CURSOR = 'memoryExtractionRevision'
 const MEMORY_EXTRACTION_BATCH_CHARS = 30_000
 const MEMORY_SOURCE_ENTRY_CHARS = 12_000
-const COMPUTER_WORKSPACE_MIGRATION_SETTING = 'computerWorkspaceMigration'
 
 type MemoryRegistry = {
   searchSessions(input: { query: string; limit?: number }): Promise<import('../shared/pi-contract').SessionSearchResult[]>
@@ -72,69 +59,34 @@ type MemoryRegistry = {
 }
 
 type ComputerEnv = Env & {
-  COMPUTER_R2?: R2Bucket
-  COMPUTER_R2_BUCKET?: string
   GIT_TOKEN?: string
   GIT_USERNAME?: string
 }
 
-const SYNC_RETRY_PREFIX = 'computer:sync-retry:'
-
-class DurableSyncRetryScheduler implements SyncRetryScheduler {
-  constructor(private readonly storage: DurableObjectStorage) {}
-
-  get(backend: string): Promise<SyncRetryIntent | undefined> {
-    return this.storage.get<SyncRetryIntent>(`${SYNC_RETRY_PREFIX}${backend}`)
-  }
-
-  async schedule(intent: SyncRetryIntent): Promise<void> {
-    await this.storage.put(`${SYNC_RETRY_PREFIX}${intent.backend}`, intent)
-    const alarm = await this.storage.getAlarm()
-    if (alarm === null || intent.notBefore < alarm) await this.storage.setAlarm(intent.notBefore)
-  }
-
-  async clear(backend: string): Promise<void> {
-    await this.storage.delete(`${SYNC_RETRY_PREFIX}${backend}`)
-  }
-}
-
 export class PiSession extends Agent<Env> {
+  /** Stay resident in memory while the user is connected. We do NOT
+   *  hibernate: the filesystem is purely in-memory, so hibernation
+   *  would silently wipe it. A non-hibernating DO is eventually
+   *  evicted after the last connection drops, which is the desired
+   *  "ephemeral session" behaviour. */
+  static options = { hibernate: false } as const
+
   private active = false
   private harness?: PiHarness
   private memoryExtraction?: Promise<void>
   private selectedModelId?: string
   private readonly sessionStorage = new PiSessionStorage(this.ctx.storage)
   private readonly session = new Session(this.sessionStorage)
-  private readonly retryScheduler = new DurableSyncRetryScheduler(this.ctx.storage)
-  private readonly workspace = new Workspace({
-    storage: this.ctx.storage as unknown as DurableObjectStorageLike,
-    sessionId: this.ctx.id.toString(),
-    waitUntil: this.ctx.waitUntil.bind(this.ctx),
-    backends: [],
-    git: createGitClient(),
-    defaultGitIdentity: { name: 'Pi', email: 'pi@cloudflare.invalid' },
-    mounts: computerMounts(this.env as ComputerEnv),
-    observer: createCloudflareObserver({ tracing }),
-    retryScheduler: this.retryScheduler,
-    useThink: true,
-  }) as ComputerWorkspace
+  private readonly workspace = new MemoryWorkspace()
 
   async onStart(): Promise<void> {
-    if (!this.sessionStorage.getSetting<boolean>(COMPUTER_WORKSPACE_MIGRATION_SETTING)) {
-      await migrateLegacyShellWorkspace(
-        this.ctx.storage as unknown as DurableObjectStorageLike,
-        this.workspace,
-      )
-      this.sessionStorage.setSetting(COMPUTER_WORKSPACE_MIGRATION_SETTING, true)
-    }
+    await this.workspace.ready()
+    // Wire a git client bound to the in-memory fs so git operations
+    // stay entirely in memory too.
+    this.workspace.setGit(new MemoryGitClient(this.workspace))
     if (this.sessionStorage.isInitialized()) {
       this.scheduleMemoryExtraction()
     }
-  }
-
-  async __getWorkspaceStub(): Promise<WorkspaceStub> {
-    await this.workspace.ready()
-    return this.workspace.stub()
   }
 
   async initialize(metadata: InitializeMetadata): Promise<SessionOverview> {
@@ -373,7 +325,7 @@ export class PiSession extends Agent<Env> {
         if (this.isMountedPath(path)) continue
         const parent = path.slice(0, path.lastIndexOf('/')) || '/'
         if (parent !== '/') await this.workspace.mkdir(parent, { recursive: true })
-        if (file.encoding === 'base64') await this.workspace.fs.writeFile(path, decodeBase64(file.content))
+        if (file.encoding === 'base64') await this.workspace.writeFile(path, decodeBase64(file.content))
         else await this.workspace.writeFile(path, file.content)
       }
       if (metadata?.name) await this.session.appendSessionName(metadata.name)
@@ -506,10 +458,8 @@ export class PiSession extends Agent<Env> {
     return Promise.all(files.map(async (file) => await this.workspace.stat(file.path) ?? file))
   }
 
-  private isMountedPath(path: string): boolean {
-    for (const mount of this.workspace.mounts().keys()) {
-      if (path === mount || path.startsWith(`${mount}/`)) return true
-    }
+  private isMountedPath(_path: string): boolean {
+    // MemoryWorkspace has no mounts; nothing is ever a mounted path.
     return false
   }
 
@@ -597,13 +547,6 @@ function gitAuthConfig(env: ComputerEnv): { username: string; password: string }
   const token = env.GIT_TOKEN
   if (!token) return undefined
   return { username: env.GIT_USERNAME || 'oauth2', password: token }
-}
-
-function computerMounts(env: ComputerEnv): WorkspaceOptions['mounts'] {
-  if (!env.COMPUTER_R2) return undefined
-  return {
-    [`${WORKSPACE_ROOT}/reference`]: mountR2Bucket(env.COMPUTER_R2, { prefix: 'reference/', mode: 'read-only' }),
-  }
 }
 
 function validPrompt(prompt: string): string {

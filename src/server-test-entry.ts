@@ -1,6 +1,5 @@
 export { PiRegistry } from './server/pi-registry'
 export { PiSession } from './server/pi-session'
-export { WorkspaceProxy, WorkspaceServiceProxy } from '@cloudflare/computer'
 
 export default {
   fetch() {
