@@ -31,6 +31,7 @@ import { PiSessionStorage, type PiSessionMetadata } from './pi-session-storage'
 import { toPiStreamEvent } from './stream-events'
 import { PI_REGISTRY_INSTANCE } from '../shared/pi-contract'
 import { createSessionSearchTool, createWorkspaceTools } from './workspace-tools'
+import { createFetchTool } from './fetch-tool'
 import { MemoryGitClient } from './memory-git'
 import { MemoryWorkspace } from './memory-workspace'
 import { WORKSPACE_ROOT, workspacePath } from './workspace-root'
@@ -365,6 +366,7 @@ export class PiSession extends Agent<Env> {
       storage: this.sessionStorage,
       tools: [
         ...createWorkspaceTools(this.workspace, { gitAuth: gitAuthConfig(this.env as ComputerEnv) }),
+        createFetchTool(),
         createSessionSearchTool(registry),
         createMemoryTool(registry, sessionId),
       ],

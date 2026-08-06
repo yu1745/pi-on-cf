@@ -17,6 +17,24 @@ const text = (value: unknown) => ({
   details: {},
 })
 
+/** Derive a clean directory name from a git URL: take the last non-empty
+ *  path segment and strip a trailing .git. e.g.
+ *  https://github.com/o/ic2-fabric.git -> ic2-fabric
+ *  Falls back to "repo" if nothing usable can be extracted. The result is
+ *  always a single path segment (no slashes, no dot/dotdot escapes). */
+function repoNameFromUrl(url: string): string {
+  let pathname: string
+  try {
+    pathname = new URL(url).pathname
+  } catch {
+    pathname = url
+  }
+  const segments = pathname.replace(/\.git$/, '').replace(/\/$/, '').split('/').filter(Boolean)
+  const name = segments[segments.length - 1]
+  if (!name || name === '.' || name === '..' || /[\\/]/.test(name)) return 'repo'
+  return name
+}
+
 export type CreateWorkspaceToolsOptions = {
   /**
    * Credentials injected into git network operations (clone/push/pull)
@@ -52,19 +70,11 @@ export function createWorkspaceTools(workspace: MemoryWorkspace, options?: Creat
     command: Type.Union([
       Type.Literal('clone'),
       Type.Literal('status'),
-      Type.Literal('add'),
-      Type.Literal('commit'),
-      Type.Literal('push'),
-      Type.Literal('pull'),
       Type.Literal('log'),
-    ], { description: 'Git subcommand to run' }),
+    ], { description: 'Read-only git subcommand to run. Mutating operations (add/commit/push/pull) are intentionally unavailable — repositories can never be written to.' }),
     url: Type.Optional(Type.String({ description: 'Repository URL for clone, e.g. https://github.com/owner/repo. The https:// prefix is added automatically if omitted.' })),
-    message: Type.Optional(Type.String({ description: 'Commit message for commit' })),
-    paths: Type.Optional(Type.Array(Type.String(), { description: 'Paths to stage for add, relative to dir. Defaults to ["."]' })),
-    dir: Type.Optional(Type.String({ description: `Working-tree directory, defaults to ${WORKSPACE_ROOT}` })),
-    ref: Type.Optional(Type.String({ description: 'Branch/tag/commit ref for clone/push/pull' })),
-    remote: Type.Optional(Type.String({ description: 'Remote name for push/pull, defaults to "origin"' })),
-    force: Type.Optional(Type.Boolean({ description: 'Force push' })),
+    dir: Type.Optional(Type.String({ description: `Target directory. For clone, omitting this creates a subdirectory named after the repo under ${WORKSPACE_ROOT} (mirroring the git CLI). For other commands it is the working tree (defaults to ${WORKSPACE_ROOT}).` })),
+    ref: Type.Optional(Type.String({ description: 'Branch/tag/commit ref to clone' })),
   })
 
   const readTool: AgentHarnessTool<undefined, typeof readSchema> = {
@@ -172,36 +182,20 @@ export function createWorkspaceTools(workspace: MemoryWorkspace, options?: Creat
             // Accept shorthand like "github.com/owner/repo" and add the scheme.
             let cloneUrl = params.url.trim()
             if (!/^https?:\/\//.test(cloneUrl)) cloneUrl = `https://${cloneUrl}`
-            await git.clone({ url: cloneUrl, dir, ref: params.ref, headers: authHeaders })
+            // Mirror `git clone <url>`: when no dir is given, create a
+            // subdirectory named after the repository (minus .git) under
+            // the workspace root, instead of flattening into the root.
+            const cloneDir = params.dir
+              ? requireWorkspacePath(params.dir)
+              : requireWorkspacePath(`${WORKSPACE_ROOT}/${repoNameFromUrl(cloneUrl)}`)
+            await git.clone({ url: cloneUrl, dir: cloneDir, ref: params.ref, headers: authHeaders })
             signal?.throwIfAborted()
-            return text(`Cloned ${cloneUrl}${params.ref ? ` (ref ${params.ref})` : ''} into ${dir}`)
+            return text(`Cloned ${cloneUrl}${params.ref ? ` (ref ${params.ref})` : ''} into ${cloneDir}`)
           }
           case 'status': {
             const entries = await git.status({ dir })
             signal?.throwIfAborted()
             return text(entries)
-          }
-          case 'add': {
-            const paths = params.paths ?? ['.']
-            await git.add({ dir, paths })
-            signal?.throwIfAborted()
-            return text(`Staged ${paths.join(', ')}`)
-          }
-          case 'commit': {
-            if (!params.message) throw new Error('message is required for commit')
-            const result = await git.commit({ message: params.message, dir })
-            signal?.throwIfAborted()
-            return text({ oid: result.oid })
-          }
-          case 'push': {
-            const result = await git.push({ dir, remote: params.remote ?? 'origin', ref: params.ref, force: params.force, headers: authHeaders })
-            signal?.throwIfAborted()
-            return text(result)
-          }
-          case 'pull': {
-            await git.pull({ dir, remote: params.remote ?? 'origin', ref: params.ref, headers: authHeaders })
-            signal?.throwIfAborted()
-            return text(`Pulled into ${dir}`)
           }
           case 'log': {
             const commits = await git.log({ dir })

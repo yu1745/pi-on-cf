@@ -6,8 +6,9 @@
  * MemoryWorkspace directly via its `promises` adapter, so every git
  * object read or working-tree write stays in memory — zero storage IO.
  *
- * Only the subcommands pi-on-cf's git tool exposes are wired up:
- * clone, status, add, commit, push, pull, log.
+ * Only read-only subcommands are wired up: clone, status, log. Mutating
+ * operations (add/commit/push/pull) are deliberately absent so the agent
+ * can never affect a remote repository.
  */
 
 import * as isogit from 'isomorphic-git'
@@ -23,10 +24,6 @@ export interface CloneOptions {
   dir: string
   ref?: string
   headers?: Record<string, string>
-}
-
-export interface CommitResult {
-  oid: string
 }
 
 export class MemoryGitClient {
@@ -67,87 +64,8 @@ export class MemoryGitClient {
     return isogit.statusMatrix({ fs: this.fs, dir: opts.dir })
   }
 
-  async add(opts: { dir: string; paths: string[] }): Promise<void> {
-    await this.ensureDir(opts.dir)
-    for (const rel of opts.paths) {
-      await isogit.add({ fs: this.fs, dir: opts.dir, filepath: rel })
-    }
-  }
-
-  async commit(opts: { dir: string; message: string }): Promise<CommitResult> {
-    await this.ensureDir(opts.dir)
-    const oid = await isogit.commit({
-      fs: this.fs,
-      dir: opts.dir,
-      message: opts.message,
-      author: { name: 'Pi', email: 'pi@cloudflare.invalid' },
-    })
-    return { oid }
-  }
-
-  async push(opts: {
-    dir: string
-    remote?: string
-    ref?: string
-    force?: boolean
-    headers?: Record<string, string>
-  }): Promise<isogit.PushResult> {
-    await this.ensureDir(opts.dir)
-    const http = (await import('isomorphic-git/http/web')).default
-    return isogit.push({
-      fs: this.fs,
-      http,
-      dir: opts.dir,
-      remote: opts.remote ?? 'origin',
-      ref: opts.ref,
-      force: opts.force,
-      headers: opts.headers,
-    })
-  }
-
-  async pull(opts: {
-    dir: string
-    remote?: string
-    ref?: string
-    headers?: Record<string, string>
-  }): Promise<void> {
-    await this.ensureDir(opts.dir)
-    const http = (await import('isomorphic-git/http/web')).default
-    // pull = fetch + merge (fast-forward). For a memory workspace with a
-    // single user, fast-forward is the only realistic outcome.
-    await isogit.fetch({
-      fs: this.fs,
-      http,
-      dir: opts.dir,
-      remote: opts.remote ?? 'origin',
-      ref: opts.ref,
-      headers: opts.headers,
-      depth: 1,
-    })
-    // Merge the fetched ref into HEAD (fast-forward only).
-    const branch = opts.ref ?? (await this.currentBranch({ dir: opts.dir }))
-    if (branch) {
-      try {
-        await isogit.merge({ fs: this.fs, dir: opts.dir, ours: branch, theirs: `${opts.remote ?? 'origin'}/${branch}`, fastForwardOnly: true })
-        await isogit.checkout({ fs: this.fs, dir: opts.dir, ref: branch })
-      } catch {
-        // Non-fast-forward or no branch; leave HEAD as-is.
-      }
-    }
-  }
-
   async log(opts: { dir: string; depth?: number }): Promise<isogit.ReadCommitResult[]> {
     await this.ensureDir(opts.dir)
     return isogit.log({ fs: this.fs, dir: opts.dir, depth: opts.depth ?? 50 })
-  }
-
-  async currentBranch(opts: { dir: string }): Promise<string | undefined> {
-    await this.ensureDir(opts.dir)
-    try {
-      const branch = await isogit.currentBranch({ fs: this.fs, dir: opts.dir, fullname: false })
-      return branch ?? undefined
-    } catch {
-      return undefined
-    }
   }
 }
