@@ -1,5 +1,0 @@
-[    4838ms] [ERROR] Could not load models Error: Method listModels does not exist
-    at Object.onMessage (https://pi-on-cf.wangyu174551226.workers.dev/assets/index-BRO0JoUv.js:34:13413)
-    at jC.r (https://pi-on-cf.wangyu174551226.workers.dev/assets/index-BRO0JoUv.js:34:6261)
-    at WebSocket._handleMessage (https://pi-on-cf.wangyu174551226.workers.dev/assets/index-BRO0JoUv.js:34:1231) @ https://pi-on-cf.wangyu174551226.workers.dev/assets/sessions._sessionId-lx2gA6pT.js:1
-[   69030ms] [ERROR] Failed to load resource: the server responded with a status of 400 () @ https://pi-on-cf.wangyu174551226.workers.dev/api/agents/PiSession/48684512-c86b-4307-9867-a9655154ea43:0
