@@ -53,7 +53,6 @@ function WorkspaceSession({ sessionId }: { sessionId: string }) {
             value={session.selectedModel}
             onChange={(event) => void session.selectModel(event.target.value)}
             disabled={Boolean(session.pendingAction) || session.isRunning}
-            style={{ marginRight: 12, background: 'transparent', color: 'inherit', border: '1px solid currentColor', borderRadius: 4, padding: '4px 8px', fontSize: 12 }}
           >
             {session.models.map((model) => (
               <option key={model.id} value={model.id}>
@@ -80,7 +79,7 @@ function WorkspaceSession({ sessionId }: { sessionId: string }) {
         </nav>
 
         <div id="chat-panel" className={`console-panel ${session.mobileView !== 'chat' ? 'mobile-hidden' : ''}`} role="tabpanel" aria-label="Chat" aria-labelledby="chat-tab">
-          <div className="console-header"><span>ACTIVE / {name.toUpperCase()}</span><span>{messageCount.toString().padStart(3, '0')} MSG</span></div>
+          <div className="console-header"><span>Conversation</span><span>{messageCount} message{messageCount === 1 ? '' : 's'}</span></div>
           <TranscriptView activeTextId={session.activeTextId} entries={session.entries} isRunning={session.isRunning} onScroll={session.handleTranscriptScroll} onTryOperation={() => session.setInput('Create /hello.ts with a Worker that returns “Hello from Pi”.')} transcriptRef={session.transcriptRef} />
           {session.error && <Banner className="error-banner" variant="error" role="alert" description={session.error} />}
           <PromptComposer input={session.input} isReady={session.isReady} isResetting={Boolean(session.pendingAction)} isRunning={session.isRunning} onAbort={() => void session.abort()} onInputChange={session.setInput} onSubmit={session.submit} />
