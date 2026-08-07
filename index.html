@@ -5,6 +5,24 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>MC 答疑板 · 《我的世界》</title>
     <link rel="icon" href="/favicon.ico" />
+    <script>
+      // 在 React 加载前应用主题，避免首屏闪白 (FOUC)。
+      // 优先级: localStorage > 系统偏好 > 默认 light。
+      (function () {
+        try {
+          var stored = localStorage.getItem('pi-theme')
+          var mode =
+            stored === 'light' || stored === 'dark'
+              ? stored
+              : window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light'
+          document.documentElement.dataset.mode = mode
+        } catch (_) {
+          /* localStorage 不可用时保持默认 light */
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

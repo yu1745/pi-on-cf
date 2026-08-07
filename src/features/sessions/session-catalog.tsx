@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useNavigate } from '../../client/router'
+import { ThemeToggle } from '../../client/theme-toggle'
 import { Banner } from '@cloudflare/kumo/components/banner'
 import { Button } from '@cloudflare/kumo/components/button'
 import { Copy, GitFork, Pencil, Plus, Search, Trash2 } from 'lucide-react'
@@ -77,6 +78,7 @@ export function SessionCatalog() {
           <div><p className="eyebrow">《我的世界》服务器答疑板</p><h1>MC 答疑板</h1></div>
         </div>
         <div className="catalog-counter"><strong>{registry.sessions.length.toString().padStart(2, '0')}</strong><span>个提问</span></div>
+        <ThemeToggle />
       </header>
 
       <section className="catalog-grid">

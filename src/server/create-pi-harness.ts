@@ -3,10 +3,10 @@ import { createModels, createProvider, type Model } from '@earendil-works/pi-ai'
 import { stream, streamSimple } from '@earendil-works/pi-ai/api/openai-completions'
 import type { PiSessionStorage } from './pi-session-storage'
 
-export type ModelSource = 'env' | 'cloudflare'
+export type ModelSource = 'env'
 
 export type ModelOption = {
-  /** Model id sent to the provider, e.g. "MiniMax-M3" or "@cf/zai-org/glm-5". */
+  /** Model id sent to the provider, e.g. "MiniMax-M3" or "deepseek-v4-flash". */
   id: string
   /** Display label for the UI selector. */
   label: string
@@ -44,9 +44,8 @@ const BASE_SYSTEM_PROMPT = [
 /**
  * Build the list of selectable models for the UI.
  *
- * - The env-configured model (AI_MODEL via AI_BASE_URL) is always first and marked default.
- * - Cloudflare Workers AI models are appended when CF_AI_MODELS is set (comma-separated).
- *   They are served from the account-scoped Workers AI endpoint using CF_API_TOKEN.
+ * Only the env-configured model (AI_MODEL via AI_BASE_URL / AI_API_KEY)
+ * is offered. There is no longer a Cloudflare Workers AI fallback list.
  */
 export function listModelOptions(env: Env): ModelOption[] {
   const options: ModelOption[] = []
@@ -60,37 +59,11 @@ export function listModelOptions(env: Env): ModelOption[] {
       default: true,
     })
   }
-
-  const cfModels = (env.CF_AI_MODELS || '').split(',').map((s) => s.trim()).filter(Boolean)
-  for (const id of cfModels) {
-    if (options.some((option) => option.id === id)) continue
-    options.push({ id, label: id, source: 'cloudflare' })
-  }
-
-  // If no env key, mark the first CF model as default.
-  if (!env.AI_API_KEY && options.length > 0 && !options.some((o) => o.default)) {
-    options[0].default = true
-  }
   return options
 }
 
 /** Resolve a model id to its concrete Model descriptor + provider credentials. */
-function resolveModel(env: Env, modelId: string, source: ModelSource): Model<'openai-completions'> {
-  if (source === 'cloudflare') {
-    const accountId = env.CLOUDFLARE_ACCOUNT_ID
-    return {
-      id: modelId,
-      name: modelId,
-      api: 'openai-completions',
-      provider: 'cloudflare',
-      baseUrl: `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`,
-      reasoning: true,
-      input: ['text'],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 32_000,
-      maxTokens: 8_000,
-    }
-  }
+function resolveModel(env: Env, modelId: string): Model<'openai-completions'> {
   return {
     id: modelId,
     name: modelId,
@@ -105,21 +78,12 @@ function resolveModel(env: Env, modelId: string, source: ModelSource): Model<'op
   }
 }
 
-function sourceFor(env: Env, modelId: string): ModelSource {
-  const options = listModelOptions(env)
-  const found = options.find((o) => o.id === modelId)
-  if (found) return found.source
-  // Unknown id: assume env provider if a key is set, else cloudflare.
-  return env.AI_API_KEY ? 'env' : 'cloudflare'
-}
-
 export function createPiHarness({ env, storage, tools, memory, modelId }: CreatePiHarnessOptions) {
   const options = listModelOptions(env)
   const chosen = modelId && options.some((o) => o.id === modelId)
     ? modelId
     : (options.find((o) => o.default)?.id || options[0]?.id || env.AI_MODEL || 'MiniMax-M3')
-  const source = sourceFor(env, chosen)
-  const model = resolveModel(env, chosen, source)
+  const model = resolveModel(env, chosen)
 
   const models = createModels()
 
@@ -137,31 +101,7 @@ export function createPiHarness({ env, storage, tools, memory, modelId }: Create
           }),
         },
       },
-      models: [resolveModel(env, env.AI_MODEL || 'MiniMax-M3', 'env')],
-      api: { stream, streamSimple },
-    }))
-  }
-
-  // Cloudflare Workers AI provider.
-  if (env.CLOUDFLARE_ACCOUNT_ID && env.CF_API_TOKEN) {
-    const cfToken = env.CF_API_TOKEN
-    const cfModelIds = (env.CF_AI_MODELS || '').split(',').map((s) => s.trim()).filter(Boolean)
-    models.setProvider(createProvider({
-      id: 'cloudflare',
-      name: 'Cloudflare Workers AI',
-      auth: {
-        apiKey: {
-          name: 'CF API token',
-          resolve: async () => ({
-            auth: {
-              apiKey: cfToken,
-              baseUrl: `https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}/ai/v1`,
-            },
-            source: 'CF_API_TOKEN',
-          }),
-        },
-      },
-      models: cfModelIds.map((id) => resolveModel(env, id, 'cloudflare')),
+      models: [resolveModel(env, env.AI_MODEL || 'MiniMax-M3')],
       api: { stream, streamSimple },
     }))
   }
@@ -185,7 +125,7 @@ export function createPiHarness({ env, storage, tools, memory, modelId }: Create
 
 export function getMemoryModel(env: Env): Model<'openai-completions'> {
   const id = env.AI_MEMORY_MODEL || env.AI_MODEL || 'MiniMax-M3'
-  return resolveModel(env, id, sourceFor(env, id))
+  return resolveModel(env, id)
 }
 
 export function buildPiSystemPrompt(memoryContext: string): string {

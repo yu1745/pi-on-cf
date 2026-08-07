@@ -1,4 +1,5 @@
 import { Link, useNavigate } from '../../client/router'
+import { ThemeToggle } from '../../client/theme-toggle'
 import { Banner } from '@cloudflare/kumo/components/banner'
 import { Tabs } from '@cloudflare/kumo/components/tabs'
 import { ArrowLeft, GitCommitHorizontal } from 'lucide-react'
@@ -62,6 +63,7 @@ function WorkspaceSession({ sessionId }: { sessionId: string }) {
           </select>
           <span className="status-light" />AI 在线
         </div>
+        <ThemeToggle />
       </header>
 
       <section className="workbench">
