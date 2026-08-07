@@ -7,6 +7,38 @@ import { LightningFsAdapter } from './just-bash-fs-adapter'
 import { defineBashGitCommand } from './bash-git-command'
 import { requireWorkspacePath, WORKSPACE_ROOT } from './workspace-root'
 
+/**
+ * Adapter from the Worker's global `fetch` to just-bash's SecureFetch
+ * contract. Mirrors @cloudflare/computer's ShellWorker defaultSecureFetch:
+ * no allow-list, no private-range checks — the Worker's own outbound
+ * (globalOutbound) is the egress boundary, exactly like the standalone
+ * fetch tool. curl in bash lets the agent pull web content / docs and
+ * pipe them (e.g. `curl -s URL | grep ...`), which the fetch tool can't.
+ */
+const workerSecureFetch = async (
+  url: string,
+  options?: { method?: string; headers?: Record<string, string>; body?: string; followRedirects?: boolean; signal?: AbortSignal },
+): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: Uint8Array; url: string }> => {
+  const response = await fetch(url, {
+    method: options?.method,
+    headers: options?.headers,
+    body: options?.body,
+    redirect: options?.followRedirects === false ? 'manual' : 'follow',
+    signal: options?.signal,
+  })
+  const headers: Record<string, string> = Object.create(null)
+  response.headers.forEach((value, key) => {
+    headers[key] = value
+  })
+  return {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+    body: new Uint8Array(await response.arrayBuffer()),
+    url: response.url || url,
+  }
+}
+
 type RegistrySearch = {
   searchSessions(input: { query: string; limit?: number }): Promise<SessionSearchResult[]>
 }
@@ -126,6 +158,12 @@ export function createWorkspaceTools(workspace: MemoryWorkspace, options?: Creat
         // boundary (matches Computer's ShellWorker config).
         defenseInDepth: { enabled: false } as unknown as ConstructorParameters<typeof Bash>[0] extends { defenseInDepth?: infer D } ? D : never,
         executionLimits: { maxExecutionTimeMs: 30_000 },
+        // curl: register just-bash's curl command backed by the Worker's
+        // global fetch. Egress is governed by the Worker's own outbound
+        // policy (no extra allow-list here) — matches the standalone
+        // fetch tool, which also lets the agent reach any URL. Network in
+        // curl is for fetching web content/docs the agent then greps/pipes.
+        fetch: workerSecureFetch as unknown as ConstructorParameters<typeof Bash>[0] extends { fetch?: infer F } ? F : never,
         // git is exposed as a bash custom command (clone + ls-remote only).
         // See bash-git-command.ts. Other subcommands exit 1.
         customCommands: [defineBashGitCommand({

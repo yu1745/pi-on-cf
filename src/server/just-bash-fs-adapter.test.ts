@@ -118,3 +118,33 @@ describe('just-bash over lightning-fs (single source of truth)', () => {
     expect(result.stdout).toBe('Alice\nBob\n')
   })
 })
+
+describe('bash curl (fetch-backed)', () => {
+  it('curl fetches a URL and the body reaches stdout', async () => {
+    const ws = await freshWorkspace()
+    // curl needs a `fetch` option to be registered. We build a Bash with
+    // a stub SecureFetch so the test does not hit the network.
+    const fetched: string[] = []
+    const stubFetch = async (url: string) => {
+      fetched.push(url)
+      return {
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'text/plain' },
+        body: new TextEncoder().encode('hello from the stub\n'),
+        url,
+      }
+    }
+    const bash = new Bash({
+      fs: new LightningFsAdapter(ws.fs as never) as never,
+      cwd: WORKSPACE,
+      defenseInDepth: { enabled: false } as never,
+      executionLimits: { maxExecutionTimeMs: 5_000 },
+      fetch: stubFetch as never,
+    })
+    const r = await bash.exec('curl -s https://example.test/ | tr a-z A-Z')
+    expect(r.exitCode).toBe(0)
+    expect(fetched).toContain('https://example.test/')
+    expect(r.stdout).toContain('HELLO FROM THE STUB')
+  })
+})
