@@ -12,8 +12,8 @@ import { requireWorkspacePath, WORKSPACE_ROOT } from './workspace-root'
  * contract. Mirrors @cloudflare/computer's ShellWorker defaultSecureFetch:
  * no allow-list, no private-range checks — the Worker's own outbound
  * (globalOutbound) is the egress boundary, exactly like the standalone
- * fetch tool. curl in bash lets the agent pull web content / docs and
- * pipe them (e.g. `curl -s URL | grep ...`), which the fetch tool can't.
+ * curl lets the agent pull web content / docs / API responses and pipe
+ * them (e.g. `curl -s URL | grep ...`), which a structured tool can't.
  */
 const workerSecureFetch = async (
   url: string,
@@ -145,7 +145,7 @@ export function createWorkspaceTools(workspace: MemoryWorkspace, options?: Creat
     name: 'bash',
     label: 'Run bash command',
     description:
-      'Run a bash command against the in-memory workspace. Supports the full core unix toolset — pipes (|), redirections (> >> 2> &>), command chaining (&& || ;), variables, globs, loops, and functions — plus text tools like grep, sed, awk, jq, sort, uniq, wc, head/tail, cut, tr. `git clone` and `git ls-remote` are also available inside bash (SSH/bare URLs are rewritten to HTTPS automatically; .git is dropped after clone to save memory). Filesystem is shared with the read/write/edit tools: a file written with `write` is visible to `cat`, and vice versa. cwd is /workspace. There is no network beyond git/fetch and no native binaries (no npm, python, node).',
+      'Run a bash command against the in-memory workspace. Supports the full core unix toolset — pipes (|), redirections (> >> 2> &>), command chaining (&& || ;), variables, globs, loops, and functions — plus text tools like grep, sed, awk, jq, sort, uniq, wc, head/tail, cut, tr. `curl` is the HTTP surface (e.g. `curl -s URL | jq .field`). `git clone` and `git ls-remote` are also available inside bash (SSH/bare URLs are rewritten to HTTPS automatically; .git is dropped after clone to save memory). Filesystem is shared with the read/write/edit tools: a file written with `write` is visible to `cat`, and vice versa. cwd is /workspace. There is no native binary execution (no npm, python, node).',
     parameters: bashSchema,
     executionMode: 'sequential',
     execute: async (_id, { command, cwd }, signal) => {
@@ -160,9 +160,9 @@ export function createWorkspaceTools(workspace: MemoryWorkspace, options?: Creat
         executionLimits: { maxExecutionTimeMs: 30_000 },
         // curl: register just-bash's curl command backed by the Worker's
         // global fetch. Egress is governed by the Worker's own outbound
-        // policy (no extra allow-list here) — matches the standalone
-        // fetch tool, which also lets the agent reach any URL. Network in
-        // curl is for fetching web content/docs the agent then greps/pipes.
+        // policy (no extra allow-list here). curl is the ONLY HTTP surface
+        // (the standalone fetch tool has been removed), so the agent routes
+        // all web/API/doc fetches through curl — and can pipe the result.
         fetch: workerSecureFetch as unknown as ConstructorParameters<typeof Bash>[0] extends { fetch?: infer F } ? F : never,
         // git is exposed as a bash custom command (clone + ls-remote only).
         // See bash-git-command.ts. Other subcommands exit 1.
