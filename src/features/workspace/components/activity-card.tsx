@@ -23,12 +23,12 @@ export function ActivityCard({ entry }: { entry: Extract<TranscriptEntry, { type
   const reasoning = entry.type === 'reasoning'
   const sessionSummary = entry.type === 'summary'
   const toolSummary = entry.type === 'tool' ? toolArgumentSummary(entry.args) : ''
-  const heading = reasoning ? 'REASONING' : sessionSummary
-    ? entry.kind === 'compaction' ? 'COMPACTION SUMMARY' : 'BRANCH SUMMARY'
+  const heading = reasoning ? '思考' : sessionSummary
+    ? entry.kind === 'compaction' ? '对话摘要' : '脉络摘要'
     : entry.name.replaceAll('_', ' ').toUpperCase()
-  const description = reasoning ? (entry.status === 'running' ? 'WORKING THROUGH THE TASK' : 'THOUGHT PROCESS')
-    : sessionSummary ? 'SESSION CONTEXT CHECKPOINT'
-    : (toolSummary || 'WORKSPACE OPERATION')
+  const description = reasoning ? (entry.status === 'running' ? '正在解答' : '思考过程')
+    : sessionSummary ? '对话小结'
+    : (toolSummary || '文件操作')
 
   return (
     <Collapsible.Root
@@ -43,7 +43,7 @@ export function ActivityCard({ entry }: { entry: Extract<TranscriptEntry, { type
           <small>{description}</small>
         </span>
         <span className={`activity-status status-${entry.status}`}>
-          {entry.status === 'running' && <Loader size={13} aria-label={reasoning ? 'Reasoning in progress' : 'Tool running'} />}
+          {entry.status === 'running' && <Loader size={13} aria-label={reasoning ? '思考中' : '处理中'} />}
           {entry.status === 'complete' && <Check size={13} />}
           {entry.status === 'error' && <CircleX size={13} />}
           {entry.status}
@@ -52,11 +52,11 @@ export function ActivityCard({ entry }: { entry: Extract<TranscriptEntry, { type
       <Collapsible.Panel className={reasoning || sessionSummary ? 'reasoning-content' : 'tool-arguments'}>
         {reasoning || sessionSummary ? entry.text : (
           <>
-            <span>INPUT</span>
+            <span>输入</span>
             <pre>{JSON.stringify(entry.args ?? {}, null, 2)}</pre>
             {entry.result !== undefined && (
               <>
-                <span>OUTPUT</span>
+                <span>输出</span>
                 <pre>{typeof entry.result === 'string' ? entry.result : JSON.stringify(entry.result, null, 2)}</pre>
               </>
             )}

@@ -38,7 +38,7 @@ describe('TranscriptView', () => {
     )
 
     expect(screen.getByRole('log').getAttribute('aria-live')).toBe('off')
-    expect(screen.getByText('Pi replied: Work complete.').getAttribute('aria-live')).toBe('polite')
+    expect(screen.getByText('助手回复：Work complete.').getAttribute('aria-live')).toBe('polite')
   })
 
   it('labels a compaction checkpoint as a summary rather than reasoning', () => {
@@ -49,7 +49,7 @@ describe('TranscriptView', () => {
       />,
     )
 
-    expect(screen.getByText('COMPACTION SUMMARY')).toBeTruthy()
-    expect(screen.queryByText('REASONING')).toBeNull()
+    expect(screen.getByText('对话摘要')).toBeTruthy()
+    expect(screen.queryByText('推理')).toBeNull()
   })
 })

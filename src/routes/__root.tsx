@@ -13,7 +13,7 @@ export const Route = createRootRoute({
         content: 'width=device-width, initial-scale=1',
       },
       {
-        title: 'Pi on Cloudflare',
+        title: 'MC 答疑板 · 《我的世界》',
       },
     ],
     links: [
@@ -28,7 +28,7 @@ export const Route = createRootRoute({
 
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" data-mode="light">
+    <html lang="zh-CN" data-mode="light">
       <head>
         <HeadContent />
       </head>

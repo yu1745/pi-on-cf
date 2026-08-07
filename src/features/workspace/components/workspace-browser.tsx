@@ -91,13 +91,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       id="files-panel"
       className={`workspace-panel ${hidden ? 'panel-hidden' : ''}`}
       role="tabpanel"
-      aria-label="FILES"
+      aria-label="文件"
       aria-busy={filesLoading}
     >
       <header className="workspace-header">
         <div>
-          <span className="panel-kicker">{files.length} FILES</span>
-          <strong>Workspace</strong>
+          <span className="panel-kicker">{files.length} 个文件</span>
+          <strong>项目文件</strong>
         </div>
         <Button
           className="icon-button"
@@ -106,20 +106,20 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           variant="outline"
           onClick={onRefresh}
           disabled={filesLoading}
-          title="Refresh files"
-          aria-label="Refresh files"
+          title="刷新文件"
+          aria-label="刷新文件"
           icon={<RefreshCw size={15} className={filesLoading ? 'spinning' : ''} />}
         />
       </header>
 
-      <div className="file-list" aria-label="Workspace files" role="tree">
-        {filesLoading && files.length === 0 && <p className="file-state">Scanning workspace…</p>}
+      <div className="file-list" aria-label="工作区文件" role="tree">
+        {filesLoading && files.length === 0 && <p className="file-state">正在扫描项目文件…</p>}
         {filesError && <p className="file-error" role="alert">{filesError}</p>}
         {!filesLoading && files.length === 0 && (
           <div className="file-empty">
             <Folder size={26} strokeWidth={1.5} />
-            <strong>No files yet</strong>
-            <span>Ask Pi to create one.</span>
+            <strong>暂无文件</strong>
+            <span>让助手创建。</span>
           </div>
         )}
         {files.length > 0 && <TreeRows depth={0} expanded={expanded} node={root} onSelectPath={onSelectPath} selectedPath={selectedPath} toggle={toggle} />}
@@ -140,8 +140,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 variant="outline"
                 onClick={onDownload}
                 disabled={!canDownload}
-                title="Download file"
-                aria-label="Download file"
+                title="下载文件"
+                aria-label="下载文件"
                 icon={<Download size={15} />}
               />
             </header>
@@ -152,7 +152,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             )}
           </>
         ) : (
-          <div className="preview-placeholder">Select a file to inspect</div>
+          <div className="preview-placeholder">选择文件进行查看</div>
         )}
       </div>
     </section>

@@ -72,7 +72,7 @@ describe('SessionCatalog', () => {
     render(<Home />)
 
     expect(await screen.findByText('Edge cache prototype')).toBeTruthy()
-    expect(screen.getByText('4 MSG / NEW', { exact: false })).toBeTruthy()
+    expect(screen.getByText('4 条对话 / NEW', { exact: false })).toBeTruthy()
     expect(mocks.useAgent).toHaveBeenCalledWith({ agent: 'PiRegistry', name: 'singleton', prefix: 'api/agents' })
     expect(mocks.registry.stub.listSessions).toHaveBeenCalledWith({ query: undefined, limit: 100, sort: 'recent' })
   })
@@ -81,8 +81,8 @@ describe('SessionCatalog', () => {
     render(<Home />)
     await screen.findByText('Edge cache prototype')
 
-    fireEvent.change(screen.getByLabelText('SESSION NAME OPTIONAL'), { target: { value: '  New investigation  ' } })
-    fireEvent.submit(screen.getByRole('button', { name: 'CREATE SESSION' }).closest('form')!)
+    fireEvent.change(screen.getByLabelText('问题标题 可选'), { target: { value: '  New investigation  ' } })
+    fireEvent.submit(screen.getByRole('button', { name: '提问' }).closest('form')!)
 
     await waitFor(() => expect(mocks.registry.stub.createSession).toHaveBeenCalledWith({ name: 'New investigation' }))
     expect(mocks.navigate).toHaveBeenCalledWith({ to: '/sessions/$sessionId', params: { sessionId: 'created-session' } })
@@ -97,7 +97,7 @@ describe('SessionCatalog', () => {
 
     render(<Home />)
     await screen.findByText('Edge cache prototype')
-    const search = screen.getByLabelText('Search sessions and messages')
+    const search = screen.getByLabelText('搜索问题')
 
     fireEvent.change(search, { target: { value: 'old query' } })
     fireEvent.submit(search.closest('form')!)
@@ -127,18 +127,18 @@ describe('SessionCatalog', () => {
     render(<Home />)
     await screen.findByText('Edge cache prototype')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Rename session' }))
+    fireEvent.click(screen.getByRole('button', { name: '重命名问题' }))
     await waitFor(() => expect(mocks.registry.stub.renameSession).toHaveBeenCalledWith('session-12345678', 'Renamed session'))
-    await waitFor(() => expect((screen.getByRole('button', { name: 'Clone session' }) as HTMLButtonElement).disabled).toBe(false))
+    await waitFor(() => expect((screen.getByRole('button', { name: '克隆问题' }) as HTMLButtonElement).disabled).toBe(false))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Clone session' }))
-    await waitFor(() => expect(mocks.registry.stub.cloneSession).toHaveBeenCalledWith({ sourceSessionId: 'session-12345678', name: 'Edge cache prototype copy' }))
+    fireEvent.click(screen.getByRole('button', { name: '克隆问题' }))
+    await waitFor(() => expect(mocks.registry.stub.cloneSession).toHaveBeenCalledWith({ sourceSessionId: 'session-12345678', name: 'Edge cache prototype副本' }))
     expect(mocks.navigate).toHaveBeenCalledWith({ to: '/sessions/$sessionId', params: { sessionId: 'cloned-session' } })
-    await waitFor(() => expect((screen.getByRole('button', { name: 'Delete session' }) as HTMLButtonElement).disabled).toBe(false))
+    await waitFor(() => expect((screen.getByRole('button', { name: '删除问题' }) as HTMLButtonElement).disabled).toBe(false))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete session' }))
+    fireEvent.click(screen.getByRole('button', { name: '删除问题' }))
     await waitFor(() => expect(mocks.registry.stub.deleteSession).toHaveBeenCalledWith('session-12345678'))
-    expect(window.confirm).toHaveBeenCalledWith('Delete Edge cache prototype? This cannot be undone.')
+    expect(window.confirm).toHaveBeenCalledWith('删除 Edge cache prototype？此操作不可撤销。')
   })
 
   it('refreshes relative timestamps while the catalog remains open', async () => {

@@ -75,6 +75,7 @@ export class PiSession extends Agent<Env> {
   private active = false
   private harness?: PiHarness
   private memoryExtraction?: Promise<void>
+  private autoNaming?: Promise<void>
   private selectedModelId?: string
   private readonly sessionStorage = new PiSessionStorage(this.ctx.storage)
   private readonly session = new Session(this.sessionStorage)
@@ -87,6 +88,7 @@ export class PiSession extends Agent<Env> {
     this.workspace.setGit(new MemoryGitClient(this.workspace))
     if (this.sessionStorage.isInitialized()) {
       this.scheduleMemoryExtraction()
+      this.scheduleAutoNaming()
     }
   }
 
@@ -289,6 +291,7 @@ export class PiSession extends Agent<Env> {
       stream.send({ type: 'done' } satisfies PiStreamEvent)
       stream.end()
       this.scheduleMemoryExtraction()
+      this.scheduleAutoNaming()
     }
   }
 
@@ -501,6 +504,49 @@ export class PiSession extends Agent<Env> {
       }))
   }
 
+  private scheduleAutoNaming(): void {
+    const previous = this.autoNaming ?? this.memoryExtraction
+    const naming = (previous ? previous.catch(() => undefined) : Promise.resolve())
+      .then(async () => {
+        await this.flushOutboxToRegistry()
+        await this.autoNameSessionIfUnnamed()
+      })
+    this.autoNaming = naming
+    this.ctx.waitUntil(naming
+      .catch((error) => console.error('Could not auto-name session', error))
+      .finally(() => {
+        if (this.autoNaming === naming) this.autoNaming = undefined
+      }))
+  }
+
+  /** 会话还没有名称时，在第一次回答完成后自动生成一个标题。
+   *  已有名称（用户手动命名过）绝不覆盖；命名失败保持未命名，下次会话活跃时再试。 */
+  private async autoNameSessionIfUnnamed(): Promise<void> {
+    if (!this.env.CLOUDFLARE_ACCOUNT_ID) return
+    if (!this.env.AI_API_KEY && !this.env.CF_API_TOKEN) return
+    const sessionId = this.sessionStorage.getMetadataSync().id
+    if (await this.session.getSessionName()) return
+
+    const entries = this.sessionStorage.getEntriesWithSeq()
+    const isUserMessage = (entry: SessionTreeEntry): entry is Extract<SessionTreeEntry, { type: 'message' }> =>
+      entry.type === 'message' && entry.message.role === 'user'
+    const isAnswered = (entry: SessionTreeEntry): entry is Extract<SessionTreeEntry, { type: 'message' }> =>
+      entry.type === 'message' && entry.message.role === 'assistant' && Boolean(messageText(entry.message).trim())
+    const question = entries.map(({ entry }) => entry).find(isUserMessage)
+    const answer = entries.map(({ entry }) => entry).find(isAnswered)
+    if (!question || !answer) return
+
+    const title = await generateSessionTitle(
+      this.getHarness(),
+      messageText(question.message).trim().slice(0, 2_000),
+      messageText(answer.message).trim().slice(0, 2_000),
+      sessionId,
+    )
+    if (!title) return
+    await this.session.appendSessionName(title)
+    await this.flushOutboxToRegistry()
+  }
+
   private async extractNextMemoryBatch(): Promise<void> {
     if (!this.env.CLOUDFLARE_ACCOUNT_ID) return
     if (!this.env.AI_API_KEY && !this.env.CF_API_TOKEN) return
@@ -596,6 +642,43 @@ function messageText(message: unknown): string {
       typeof (part as { text?: unknown }).text === 'string')
     .map((part) => part.text)
     .join('\n')
+}
+
+/** 用一次轻量 LLM 请求，根据第一条问答生成会话标题。失败返回空字符串。 */
+async function generateSessionTitle(harness: PiHarness, question: string, answer: string, sessionId: string): Promise<string> {
+  const response = await harness.models.complete(harness.getModel(), {
+    systemPrompt: [
+      'You are the titling assistant for a Minecraft (我的世界) Q&A board.',
+      'Given a player\'s question and the assistant\'s answer, produce a concise Chinese title that summarizes the topic.',
+      'Rules: at most 20 Chinese characters; no quotes; no "标题：" prefix; no trailing punctuation; return only the title itself.',
+    ].join('\n'),
+    messages: [{
+      role: 'user',
+      content: `问题：${question}\n\n回答开头：${answer.slice(0, 800)}`,
+      timestamp: Date.now(),
+    }],
+  }, {
+    maxTokens: 64,
+    transformHeaders: (headers: Record<string, string | null>) => ({
+      ...headers,
+      'cf-aig-metadata': JSON.stringify({ sessionId, purpose: 'session-naming' }),
+    }),
+  })
+  if (response.stopReason === 'error' || response.stopReason === 'aborted') return ''
+  const text = response.content
+    .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+    .map((part) => part.text)
+    .join('')
+    .trim()
+  return sanitizeSessionTitle(text)
+}
+
+function sanitizeSessionTitle(title: string): string {
+  let value = title.replace(/^["'「『“”‘’]+|["'」』“”‘’]+$/g, '').trim()
+  value = value.replace(/^标题[:：]\s*/, '')
+  value = value.replace(/[\r\n]+/g, ' ').trim()
+  if (!value || value.length > 40) return ''
+  return value
 }
 
 function memorySourceEntry(entry: SessionTreeEntry): MemorySourceEntry | undefined {

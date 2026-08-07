@@ -197,7 +197,7 @@ export function usePiSession(sessionId: string) {
           onChunk: (chunk) => {
             if (request !== promptRequestRef.current) return
             const update = chunk as PiStreamEvent
-            if (update.type === 'error') setError(update.error || 'Pi stopped unexpectedly.')
+            if (update.type === 'error') setError(update.error || '助手意外停止了。')
             else enqueueStreamEvent(update)
           },
           onError: (streamError) => { if (request === promptRequestRef.current) setError(streamError) },

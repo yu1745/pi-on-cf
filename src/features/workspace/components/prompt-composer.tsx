@@ -15,10 +15,10 @@ type PromptComposerProps = {
 export function PromptComposer({ input, isReady, isResetting, isRunning, onAbort, onInputChange, onSubmit }: PromptComposerProps) {
   return (
     <form className="prompt-form" onSubmit={onSubmit}>
-      <label htmlFor="prompt">INSTRUCTION</label>
+      <label htmlFor="prompt">你的问题</label>
       <InputArea
         id="prompt"
-        aria-label="INSTRUCTION"
+        aria-label="你的问题"
         value={input}
         onValueChange={onInputChange}
         onKeyDown={(event) => {
@@ -27,12 +27,12 @@ export function PromptComposer({ input, isReady, isResetting, isRunning, onAbort
             event.currentTarget.form?.requestSubmit()
           }
         }}
-        placeholder="Ask Pi to inspect, create, or edit a file..."
+        placeholder="输入你的问题，例如：如何制作量子套件？"
         rows={3}
         disabled={isRunning || isResetting || !isReady}
       />
       <Button className="execute-button" type={isRunning ? 'button' : 'submit'} onClick={isRunning ? onAbort : undefined} disabled={!isRunning && (isResetting || !isReady || !input.trim())}>
-        {isRunning ? 'ABORT' : isReady ? 'EXECUTE' : 'LOADING'}
+        {isRunning ? '中止' : isReady ? '发送' : '加载中'}
         <span className="execute-arrow">↗</span>
       </Button>
     </form>

@@ -3,6 +3,7 @@ import { Type } from 'typebox'
 import type { SessionSearchResult } from '../shared/pi-contract'
 import type { MemoryWorkspace } from './memory-workspace'
 import type { MemoryGitClient } from './memory-git'
+import { normalizeGitUrl } from './git-url'
 import { requireWorkspacePath, WORKSPACE_ROOT } from './workspace-root'
 
 type RegistrySearch = {
@@ -76,7 +77,7 @@ export function createWorkspaceTools(workspace: MemoryWorkspace, options?: Creat
       Type.Literal('remote'),
       Type.Literal('tag'),
     ], { description: 'Read-only git subcommand to run. All operations are read-only: clone/status/log/diff/branch/remote/tag. Mutating operations (add/commit/push/pull, branch/tag/remote creation, reset, merge, rebase, stash, checkout) are intentionally unavailable — repositories (and remotes) can never be written to.' }),
-    url: Type.Optional(Type.String({ description: 'Repository URL for clone, e.g. https://github.com/owner/repo. The https:// prefix is added automatically if omitted.' })),
+    url: Type.Optional(Type.String({ description: 'Repository URL for clone. Accepts HTTPS (https://host/o/repo), bare shorthand (host/o/repo), and SSH forms (git@host:o/repo or ssh://git@host/o/repo); SSH URLs are rewritten to HTTPS transparently.' })),
     dir: Type.Optional(Type.String({ description: `Target directory. For clone, omitting this creates a subdirectory named after the repo under ${WORKSPACE_ROOT} (mirroring the git CLI). For other commands it is the working tree (defaults to ${WORKSPACE_ROOT}).` })),
     ref: Type.Optional(Type.String({ description: 'Branch/tag/commit ref to clone, or the ref to diff against (defaults to HEAD).' })),
     path: Type.Optional(Type.String({ description: 'Restrict the diff to a single repository-relative path.' })),
@@ -183,10 +184,10 @@ export function createWorkspaceTools(workspace: MemoryWorkspace, options?: Creat
         switch (params.command) {
           case 'clone': {
             if (!params.url) throw new Error('url is required for clone')
-            // isomorphic-git needs an absolute URL with a protocol.
-            // Accept shorthand like "github.com/owner/repo" and add the scheme.
-            let cloneUrl = params.url.trim()
-            if (!/^https?:\/\//.test(cloneUrl)) cloneUrl = `https://${cloneUrl}`
+            // pi-on-cf speaks HTTPS only (isomorphic-git over fetch), so
+            // rewrite SSH-form URLs to HTTPS transparently. The SSH user
+            // and port are dropped; auth comes from the configured git token.
+            const cloneUrl = normalizeGitUrl(params.url)
             // Mirror `git clone <url>`: when no dir is given, create a
             // subdirectory named after the repository (minus .git) under
             // the workspace root, instead of flattening into the root.

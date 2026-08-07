@@ -29,14 +29,14 @@ export function TranscriptView({ activeTextId, entries, isRunning, onScroll, onT
 
   return (
     <div className="transcript" ref={transcriptRef} onScroll={onScroll} aria-busy={isRunning} role="log" aria-live="off">
-      <span className="sr-only" aria-live="polite" aria-atomic="true">{isRunning ? 'Pi is working.' : assistantText ? `Pi replied: ${assistantText}` : 'Pi is ready.'}</span>
+      <span className="sr-only" aria-live="polite" aria-atomic="true">{isRunning ? '正在解答…' : assistantText ? `助手回复：${assistantText}` : '助手已就绪。'}</span>
       {entries.length === 0 && (
         <div className="empty-state">
           <span className="oversized-pi">π</span>
           <div>
-            <h2>A coding agent with no server.</h2>
-            <p>Pi’s agent loop is running inside a Cloudflare Durable Object. Give it a file to create.</p>
-            <Button className="empty-state-action" variant="ghost" onClick={onTryOperation}>TRY A FILE OPERATION</Button>
+            <h2>《我的世界》模组答疑助手。</h2>
+            <p>这里是你的《我的世界》服务器答疑板：工业2（IC2）等模组的问题都可以直接提问，助手会结合真实项目源码来解答。</p>
+            <Button className="empty-state-action" variant="ghost" onClick={onTryOperation}>试试问一个问题</Button>
           </div>
         </div>
       )}
@@ -57,7 +57,7 @@ const TranscriptRow = memo(function TranscriptRow({ active, entry, isRunning }: 
 
   return (
     <article className={`message message-${entry.role}`}>
-      <div className="message-role">{entry.role === 'user' ? 'YOU' : 'PI'}</div>
+      <div className="message-role">{entry.role === 'user' ? '你' : '助手'}</div>
       <div className="message-body">
         {entry.role === 'assistant' && entry.text ? entry.text.includes('```') ? (
           <Suspense fallback={<Streamdown>{entry.text}</Streamdown>}>
