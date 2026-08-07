@@ -110,6 +110,10 @@ export function defineBashGitCommand(options: BashGitCommandOptions) {
           exitCode: 0,
         }
       } catch (e) {
+        // Preserve the full stack so the operator can see the real failure
+        // site in `wrangler tail` / server logs. The agent only sees the
+        // message line below; the stack goes to the server console.
+        console.error('[git clone]', e instanceof Error ? e.stack : String(e))
         return { stdout: '', stderr: `git clone failed: ${errorMsg(e)}\n`, exitCode: 1 }
       }
     }
@@ -207,6 +211,7 @@ export function defineBashGitCommand(options: BashGitCommandOptions) {
         }
         return { stdout: quiet ? '' : stdout, stderr: '', exitCode: 0 }
       } catch (e) {
+        console.error('[git ls-remote]', e instanceof Error ? e.stack : String(e))
         return { stdout: '', stderr: `git ls-remote failed: ${errorMsg(e)}\n`, exitCode: 1 }
       }
     }
