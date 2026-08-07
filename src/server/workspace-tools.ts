@@ -1,8 +1,10 @@
 import type { AgentHarnessTool } from '@earendil-works/pi-agent-core'
 import { Type } from 'typebox'
+import { Bash } from 'just-bash'
 import type { SessionSearchResult } from '../shared/pi-contract'
 import type { MemoryWorkspace } from './memory-workspace'
 import type { MemoryGitClient } from './memory-git'
+import { LightningFsAdapter } from './just-bash-fs-adapter'
 import { normalizeGitUrl } from './git-url'
 import { requireWorkspacePath, WORKSPACE_ROOT } from './workspace-root'
 
@@ -62,10 +64,9 @@ export function createWorkspaceTools(workspace: MemoryWorkspace, options?: Creat
   const listSchema = Type.Object({
     path: Type.Optional(Type.String({ description: `Directory path, defaults to ${WORKSPACE_ROOT}` })),
   })
-  const findSchema = Type.Object({ pattern: Type.String({ description: 'Glob pattern, such as **/*.ts' }) })
-  const grepSchema = Type.Object({
-    pattern: Type.String({ description: 'File glob to search' }),
-    query: Type.String({ description: 'Text or regular expression to find' }),
+  const bashSchema = Type.Object({
+    command: Type.String({ description: 'Bash command or script to run. Pipes, redirections, &&, variables, globs, loops, and functions all work. cwd is /workspace. Example: grep -rn TODO src/ | wc -l' }),
+    cwd: Type.Optional(Type.String({ description: `Working directory, defaults to ${WORKSPACE_ROOT}` })),
   })
   const gitSchema = Type.Object({
     command: Type.Union([
@@ -142,31 +143,31 @@ export function createWorkspaceTools(workspace: MemoryWorkspace, options?: Creat
       return text(result)
     },
   }
-  const findTool: AgentHarnessTool<undefined, typeof findSchema> = {
-    name: 'find',
-    label: 'Find files',
-    description: 'Find durable workspace files using a glob pattern.',
-    parameters: findSchema,
-    execute: async (_id, { pattern }, signal) => {
+  const bashTool: AgentHarnessTool<undefined, typeof bashSchema> = {
+    name: 'bash',
+    label: 'Run bash command',
+    description:
+      'Run a bash command against the in-memory workspace. Supports the full core unix toolset — pipes (|), redirections (> >> 2> &>), command chaining (&& || ;), variables, globs, loops, and functions — plus text tools like grep, sed, awk, jq, sort, uniq, wc, head/tail, cut, tr. Filesystem is shared with the read/write/edit tools and git: a file written with `write` is visible to `cat`, and vice versa. cwd is /workspace. There is no network and no native binaries (no npm, python, node); for fetching use the fetch tool, for git use the git tool.',
+    parameters: bashSchema,
+    executionMode: 'sequential',
+    execute: async (_id, { command, cwd }, signal) => {
       signal?.throwIfAborted()
-      if (pattern.startsWith('/')) requireWorkspacePath(pattern)
-      const result = await workspace.glob(pattern)
+      const bash = new Bash({
+        fs: new LightningFsAdapter(workspace.fs as unknown as ConstructorParameters<typeof LightningFsAdapter>[0]) as unknown as ConstructorParameters<typeof Bash>[0] extends { fs?: infer F } ? F : never,
+        cwd: cwd ?? WORKSPACE_ROOT,
+        // defenseInDepth hooks node:module.registerHooks, which workerd
+        // does not implement; the Worker isolate IS the security
+        // boundary (matches Computer's ShellWorker config).
+        defenseInDepth: { enabled: false } as unknown as ConstructorParameters<typeof Bash>[0] extends { defenseInDepth?: infer D } ? D : never,
+        executionLimits: { maxExecutionTimeMs: 30_000 },
+      })
+      const result = await bash.exec(command, { signal })
       signal?.throwIfAborted()
-      return text(result)
-    },
-  }
-  const grepTool: AgentHarnessTool<undefined, typeof grepSchema> = {
-    name: 'grep',
-    label: 'Search files',
-    description: 'Search matching durable workspace files for text.',
-    parameters: grepSchema,
-    execute: async (_id, { pattern, query }, signal) => {
-      signal?.throwIfAborted()
-      if (pattern.startsWith('/')) requireWorkspacePath(pattern)
-      const files = (await workspace.glob(pattern)).filter((entry) => entry.type === 'file')
-      const result = (await Promise.all(files.map((file) => workspace.grep(query, file.path)))).flat()
-      signal?.throwIfAborted()
-      return text(result)
+      const out = []
+      if (result.stdout) out.push(`stdout:\n${result.stdout}`)
+      if (result.stderr) out.push(`stderr:\n${result.stderr}`)
+      out.push(`exit code: ${result.exitCode}`)
+      return text(out.join('\n\n'))
     },
   }
 
@@ -240,7 +241,7 @@ export function createWorkspaceTools(workspace: MemoryWorkspace, options?: Creat
     },
   }
 
-  return [readTool, writeTool, editTool, listTool, findTool, grepTool, gitTool]
+  return [readTool, writeTool, editTool, listTool, bashTool, gitTool]
 }
 
 export function createSessionSearchTool(
