@@ -20,3 +20,4 @@ todos.json
 
 # Playwright CLI test artifacts
 .playwright-cli
+bundled/

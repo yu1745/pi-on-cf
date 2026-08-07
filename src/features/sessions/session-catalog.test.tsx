@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { SessionSearchResult, SessionSummary } from '../shared/pi-contract'
+import type { SessionSearchResult, SessionSummary } from '../../shared/pi-contract'
 
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -22,13 +22,16 @@ vi.mock('agents/react', () => ({
   useAgent: mocks.useAgent,
 }))
 
-vi.mock('@tanstack/react-router', () => ({
-  createFileRoute: () => (options: unknown) => options,
-  Link: ({ children, params: _params, to, ...props }: React.ComponentProps<'a'> & { params?: unknown; to: string }) => <a href={to} {...props}>{children}</a>,
+// 轻量 router 的 mock：捕获 navigate 调用，Link 渲染成普通 <a>
+vi.mock('../../client/router', () => ({
+  Link: ({ children, params: _params, to, ...props }: React.ComponentProps<'a'> & { params?: unknown; to: string }) => (
+    <a href={to} {...props}>{children}</a>
+  ),
   useNavigate: () => mocks.navigate,
+  useParams: () => ({}),
 }))
 
-import { Home } from './index'
+import { SessionCatalog } from './session-catalog'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -69,7 +72,7 @@ describe('SessionCatalog', () => {
   })
 
   it('connects to the registry and renders its recent sessions', async () => {
-    render(<Home />)
+    render(<SessionCatalog />)
 
     expect(await screen.findByText('Edge cache prototype')).toBeTruthy()
     expect(screen.getByText('4 条对话 / NEW', { exact: false })).toBeTruthy()
@@ -78,7 +81,7 @@ describe('SessionCatalog', () => {
   })
 
   it('creates a named session and opens its workspace', async () => {
-    render(<Home />)
+    render(<SessionCatalog />)
     await screen.findByText('Edge cache prototype')
 
     fireEvent.change(screen.getByLabelText('问题标题 可选'), { target: { value: '  New investigation  ' } })
@@ -95,7 +98,7 @@ describe('SessionCatalog', () => {
       .mockReturnValueOnce(oldSearch.promise)
       .mockReturnValueOnce(currentSearch.promise)
 
-    render(<Home />)
+    render(<SessionCatalog />)
     await screen.findByText('Edge cache prototype')
     const search = screen.getByLabelText('搜索问题')
 
@@ -124,7 +127,7 @@ describe('SessionCatalog', () => {
   it('routes rename, clone, and delete actions through the registry', async () => {
     vi.spyOn(window, 'prompt').mockReturnValue('  Renamed session  ')
     vi.spyOn(window, 'confirm').mockReturnValue(true)
-    render(<Home />)
+    render(<SessionCatalog />)
     await screen.findByText('Edge cache prototype')
 
     fireEvent.click(screen.getByRole('button', { name: '重命名问题' }))
@@ -144,7 +147,7 @@ describe('SessionCatalog', () => {
   it('refreshes relative timestamps while the catalog remains open', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-07-28T12:00:30.000Z'))
-    render(<Home />)
+    render(<SessionCatalog />)
     await act(async () => { await Promise.resolve() })
 
     const timestamp = document.querySelector('time')

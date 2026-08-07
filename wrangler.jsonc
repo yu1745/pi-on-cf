@@ -10,6 +10,9 @@
  *
  * LLM: MiniMax-M3 via OpenAI-compatible endpoint (direct, no AI Gateway).
  * Git: isomorphic-git via @cloudflare/computer/git (no backend required).
+ *
+ * 前端: 纯 SPA（无 SSR）。前端构建产物（dist/client）作为 Workers Static
+ * Assets 部署，不计入 Worker 3MB bundle 上限。Worker 仅处理 /api/* 请求。
  */
 {
   "$schema": "node_modules/wrangler/config-schema.json",
@@ -17,6 +20,12 @@
   "compatibility_date": "2026-07-27",
   "compatibility_flags": ["nodejs_compat"],
   "main": "src/server.ts",
+  "assets": {
+    "directory": "./dist/client/",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
   "vars": {
     "AI_BASE_URL": "https://api.deepseek.com",
     "AI_MODEL": "deepseek-v4-flash",

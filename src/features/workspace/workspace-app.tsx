@@ -1,4 +1,4 @@
-import { Link, useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate } from '../../client/router'
 import { Banner } from '@cloudflare/kumo/components/banner'
 import { Tabs } from '@cloudflare/kumo/components/tabs'
 import { ArrowLeft, GitCommitHorizontal } from 'lucide-react'
