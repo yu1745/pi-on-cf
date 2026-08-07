@@ -12,23 +12,17 @@ type MemoryRegistry = {
   deleteMemory(id: string): Promise<void>
 }
 
-const parameters = Type.Union([
-  Type.Object({
-    action: Type.Literal('set'),
-    id: Type.Optional(Type.String({ description: 'Existing memory ID when correcting a memory' })),
-    kind: Type.Union([
-      Type.Literal('preference'),
-      Type.Literal('fact'),
-      Type.Literal('instruction'),
-      Type.Literal('decision'),
-    ]),
-    content: Type.String({ description: 'One concise, durable fact. Never include secrets or conversation excerpts.' }),
-  }),
-  Type.Object({
-    action: Type.Literal('delete'),
-    id: Type.String({ description: 'Memory ID shown in LONG-TERM MEMORY' }),
-  }),
-])
+const parameters = Type.Object({
+  action: Type.Union([Type.Literal('set'), Type.Literal('delete')]),
+  id: Type.Optional(Type.String({ description: 'Existing memory ID when correcting a memory, or the memory ID to delete (shown in LONG-TERM MEMORY)' })),
+  kind: Type.Optional(Type.Union([
+    Type.Literal('preference'),
+    Type.Literal('fact'),
+    Type.Literal('instruction'),
+    Type.Literal('decision'),
+  ])),
+  content: Type.Optional(Type.String({ description: 'One concise, durable fact. Never include secrets or conversation excerpts.' })),
+})
 
 export function createMemoryTool(registry: MemoryRegistry, sessionId: string): AgentHarnessTool<undefined, typeof parameters> {
   return {
@@ -40,9 +34,13 @@ export function createMemoryTool(registry: MemoryRegistry, sessionId: string): A
     execute: async (_id, input, signal) => {
       signal?.throwIfAborted()
       if (input.action === 'delete') {
+        if (!input.id) return result('Deleting a memory requires an id')
         await registry.deleteMemory(input.id)
         signal?.throwIfAborted()
         return result(`Deleted memory ${input.id}`)
+      }
+      if (!input.kind || !input.content) {
+        return result('Memory requires both a kind and content for action=set')
       }
       const memory = await registry.setMemory({
         id: input.id,

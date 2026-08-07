@@ -71,10 +71,15 @@ export function createWorkspaceTools(workspace: MemoryWorkspace, options?: Creat
       Type.Literal('clone'),
       Type.Literal('status'),
       Type.Literal('log'),
-    ], { description: 'Read-only git subcommand to run. Mutating operations (add/commit/push/pull) are intentionally unavailable — repositories can never be written to.' }),
+      Type.Literal('diff'),
+      Type.Literal('branch'),
+      Type.Literal('remote'),
+      Type.Literal('tag'),
+    ], { description: 'Read-only git subcommand to run. All operations are read-only: clone/status/log/diff/branch/remote/tag. Mutating operations (add/commit/push/pull, branch/tag/remote creation, reset, merge, rebase, stash, checkout) are intentionally unavailable — repositories (and remotes) can never be written to.' }),
     url: Type.Optional(Type.String({ description: 'Repository URL for clone, e.g. https://github.com/owner/repo. The https:// prefix is added automatically if omitted.' })),
     dir: Type.Optional(Type.String({ description: `Target directory. For clone, omitting this creates a subdirectory named after the repo under ${WORKSPACE_ROOT} (mirroring the git CLI). For other commands it is the working tree (defaults to ${WORKSPACE_ROOT}).` })),
-    ref: Type.Optional(Type.String({ description: 'Branch/tag/commit ref to clone' })),
+    ref: Type.Optional(Type.String({ description: 'Branch/tag/commit ref to clone, or the ref to diff against (defaults to HEAD).' })),
+    path: Type.Optional(Type.String({ description: 'Restrict the diff to a single repository-relative path.' })),
   })
 
   const readTool: AgentHarnessTool<undefined, typeof readSchema> = {
@@ -167,7 +172,7 @@ export function createWorkspaceTools(workspace: MemoryWorkspace, options?: Creat
   const gitTool: AgentHarnessTool<undefined, typeof gitSchema> = {
     name: 'git',
     label: 'Git',
-    description: 'Run git operations (clone/status/add/commit/push/pull/log) via isomorphic-git over HTTPS. Private-repo auth is injected automatically.',
+    description: 'Run read-only git operations (clone/status/log/diff/branch/remote/tag) via isomorphic-git over HTTPS. Private-repo auth is injected automatically. Repositories are strictly read-only: nothing can be added, committed, pushed, or otherwise written.',
     parameters: gitSchema,
     executionMode: 'sequential',
     execute: async (_id, params, signal) => {
@@ -201,6 +206,30 @@ export function createWorkspaceTools(workspace: MemoryWorkspace, options?: Creat
             const commits = await git.log({ dir })
             signal?.throwIfAborted()
             return text(commits)
+          }
+          case 'diff': {
+            const result = await git.diff({
+              dir,
+              ref: params.ref,
+              paths: params.path ? [params.path] : undefined,
+            })
+            signal?.throwIfAborted()
+            return text(result)
+          }
+          case 'branch': {
+            const branches = await git.branches(dir)
+            signal?.throwIfAborted()
+            return text(branches)
+          }
+          case 'remote': {
+            const remotes = await git.remotes(dir)
+            signal?.throwIfAborted()
+            return text(remotes)
+          }
+          case 'tag': {
+            const tags = await git.tags(dir)
+            signal?.throwIfAborted()
+            return text(tags)
           }
         }
       } catch (error) {
