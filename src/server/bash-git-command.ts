@@ -182,17 +182,22 @@ export function defineBashGitCommand(options: BashGitCommandOptions) {
           out = out.filter((r) => patterns.some((p) => matchPattern(r.ref, p)))
         }
 
-        // Format: <oid>\t<ref>. For symrefs, real git appends the target
-        // as a comment line BEFORE the HEAD oid line, but only with --symref.
+        // Format: <oid>\t<ref>, matching real `git ls-remote` byte-for-byte.
+        // Two extra cases real git handles:
+        //   1. symrefs (only with --symref): HEAD prints as
+        //      `ref: <target>\tHEAD` on its own line, BEFORE the oid line.
+        //   2. annotated tags: when the server returns a peeled oid, real
+        //      git prints a SECOND line `<peeled>\t<ref>^{}` immediately
+        //      after the tag's own line. Lightweight tags have no peeled
+        //      oid and thus no `^{}` line. --refs suppresses these.
         const lines: string[] = []
         for (const r of out) {
           if (symref && r.target && r.ref === 'HEAD') {
-            // real git format with --symref:
-            //   ref: refs/heads/main\tHEAD
-            //   <oid>\trefs/heads/main
             lines.push(`ref: ${r.target}\t${r.ref}`)
-          } else {
-            lines.push(`${r.oid}\t${r.ref}`)
+          }
+          lines.push(`${r.oid}\t${r.ref}`)
+          if (showPeeled && r.peeled) {
+            lines.push(`${r.peeled}\t${r.ref}^{}`)
           }
         }
 

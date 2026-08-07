@@ -16,8 +16,12 @@ import { defineBashGitCommand } from './bash-git-command'
 import { MemoryGitClient } from './memory-git'
 import { MemoryWorkspace } from './memory-workspace'
 
-// A small, stable, public repo with a manageable ref count.
-const REPO_URL = 'https://github.com/yu1745/ic2-fabric'
+// A public, stable fixture repo with a rich ref structure (HEAD + heads
+// + tags + pull refs). github/gemoji is maintained by GitHub itself, so
+// it will not disappear or flip to private. Used by real-git alignment
+// tests below; ref contents may drift over time but that is fine — the
+// tests compare our output to real git *live*, not against a snapshot.
+const REPO_URL = 'https://github.com/github/gemoji'
 const WORKSPACE_ROOT = '/workspace'
 
 const hasGit = (() => {
