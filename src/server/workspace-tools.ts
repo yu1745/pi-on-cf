@@ -3,9 +3,8 @@ import { Type } from 'typebox'
 import { Bash } from 'just-bash'
 import type { SessionSearchResult } from '../shared/pi-contract'
 import type { MemoryWorkspace } from './memory-workspace'
-import type { MemoryGitClient } from './memory-git'
 import { LightningFsAdapter } from './just-bash-fs-adapter'
-import { normalizeGitUrl } from './git-url'
+import { defineBashGitCommand } from './bash-git-command'
 import { requireWorkspacePath, WORKSPACE_ROOT } from './workspace-root'
 
 type RegistrySearch = {
@@ -19,24 +18,6 @@ const text = (value: unknown) => ({
   }],
   details: {},
 })
-
-/** Derive a clean directory name from a git URL: take the last non-empty
- *  path segment and strip a trailing .git. e.g.
- *  https://github.com/o/ic2-fabric.git -> ic2-fabric
- *  Falls back to "repo" if nothing usable can be extracted. The result is
- *  always a single path segment (no slashes, no dot/dotdot escapes). */
-function repoNameFromUrl(url: string): string {
-  let pathname: string
-  try {
-    pathname = new URL(url).pathname
-  } catch {
-    pathname = url
-  }
-  const segments = pathname.replace(/\.git$/, '').replace(/\/$/, '').split('/').filter(Boolean)
-  const name = segments[segments.length - 1]
-  if (!name || name === '.' || name === '..' || /[\\/]/.test(name)) return 'repo'
-  return name
-}
 
 export type CreateWorkspaceToolsOptions = {
   /**
@@ -67,21 +48,6 @@ export function createWorkspaceTools(workspace: MemoryWorkspace, options?: Creat
   const bashSchema = Type.Object({
     command: Type.String({ description: 'Bash command or script to run. Pipes, redirections, &&, variables, globs, loops, and functions all work. cwd is /workspace. Example: grep -rn TODO src/ | wc -l' }),
     cwd: Type.Optional(Type.String({ description: `Working directory, defaults to ${WORKSPACE_ROOT}` })),
-  })
-  const gitSchema = Type.Object({
-    command: Type.Union([
-      Type.Literal('clone'),
-      Type.Literal('status'),
-      Type.Literal('log'),
-      Type.Literal('diff'),
-      Type.Literal('branch'),
-      Type.Literal('remote'),
-      Type.Literal('tag'),
-    ], { description: 'Read-only git subcommand to run. All operations are read-only: clone/status/log/diff/branch/remote/tag. Mutating operations (add/commit/push/pull, branch/tag/remote creation, reset, merge, rebase, stash, checkout) are intentionally unavailable — repositories (and remotes) can never be written to.' }),
-    url: Type.Optional(Type.String({ description: 'Repository URL for clone. Accepts HTTPS (https://host/o/repo), bare shorthand (host/o/repo), and SSH forms (git@host:o/repo or ssh://git@host/o/repo); SSH URLs are rewritten to HTTPS transparently.' })),
-    dir: Type.Optional(Type.String({ description: `Target directory. For clone, omitting this creates a subdirectory named after the repo under ${WORKSPACE_ROOT} (mirroring the git CLI). For other commands it is the working tree (defaults to ${WORKSPACE_ROOT}).` })),
-    ref: Type.Optional(Type.String({ description: 'Branch/tag/commit ref to clone, or the ref to diff against (defaults to HEAD).' })),
-    path: Type.Optional(Type.String({ description: 'Restrict the diff to a single repository-relative path.' })),
   })
 
   const readTool: AgentHarnessTool<undefined, typeof readSchema> = {
@@ -147,7 +113,7 @@ export function createWorkspaceTools(workspace: MemoryWorkspace, options?: Creat
     name: 'bash',
     label: 'Run bash command',
     description:
-      'Run a bash command against the in-memory workspace. Supports the full core unix toolset — pipes (|), redirections (> >> 2> &>), command chaining (&& || ;), variables, globs, loops, and functions — plus text tools like grep, sed, awk, jq, sort, uniq, wc, head/tail, cut, tr. Filesystem is shared with the read/write/edit tools and git: a file written with `write` is visible to `cat`, and vice versa. cwd is /workspace. There is no network and no native binaries (no npm, python, node); for fetching use the fetch tool, for git use the git tool.',
+      'Run a bash command against the in-memory workspace. Supports the full core unix toolset — pipes (|), redirections (> >> 2> &>), command chaining (&& || ;), variables, globs, loops, and functions — plus text tools like grep, sed, awk, jq, sort, uniq, wc, head/tail, cut, tr. `git clone` and `git ls-remote` are also available inside bash (SSH/bare URLs are rewritten to HTTPS automatically; .git is dropped after clone to save memory). Filesystem is shared with the read/write/edit tools: a file written with `write` is visible to `cat`, and vice versa. cwd is /workspace. There is no network beyond git/fetch and no native binaries (no npm, python, node).',
     parameters: bashSchema,
     executionMode: 'sequential',
     execute: async (_id, { command, cwd }, signal) => {
@@ -160,6 +126,13 @@ export function createWorkspaceTools(workspace: MemoryWorkspace, options?: Creat
         // boundary (matches Computer's ShellWorker config).
         defenseInDepth: { enabled: false } as unknown as ConstructorParameters<typeof Bash>[0] extends { defenseInDepth?: infer D } ? D : never,
         executionLimits: { maxExecutionTimeMs: 30_000 },
+        // git is exposed as a bash custom command (clone + ls-remote only).
+        // See bash-git-command.ts. Other subcommands exit 1.
+        customCommands: [defineBashGitCommand({
+          git: workspace.git as never,
+          workspaceRoot: WORKSPACE_ROOT,
+          authHeaders,
+        })],
       })
       const result = await bash.exec(command, { signal })
       signal?.throwIfAborted()
@@ -171,77 +144,7 @@ export function createWorkspaceTools(workspace: MemoryWorkspace, options?: Creat
     },
   }
 
-  const gitTool: AgentHarnessTool<undefined, typeof gitSchema> = {
-    name: 'git',
-    label: 'Git',
-    description: 'Run read-only git operations (clone/status/log/diff/branch/remote/tag) via isomorphic-git over HTTPS. Private-repo auth is injected automatically. Repositories are strictly read-only: nothing can be added, committed, pushed, or otherwise written.',
-    parameters: gitSchema,
-    executionMode: 'sequential',
-    execute: async (_id, params, signal) => {
-      signal?.throwIfAborted()
-      const dir = requireWorkspacePath(params.dir ?? WORKSPACE_ROOT)
-      const git = workspace.git as MemoryGitClient
-      try {
-        switch (params.command) {
-          case 'clone': {
-            if (!params.url) throw new Error('url is required for clone')
-            // pi-on-cf speaks HTTPS only (isomorphic-git over fetch), so
-            // rewrite SSH-form URLs to HTTPS transparently. The SSH user
-            // and port are dropped; auth comes from the configured git token.
-            const cloneUrl = normalizeGitUrl(params.url)
-            // Mirror `git clone <url>`: when no dir is given, create a
-            // subdirectory named after the repository (minus .git) under
-            // the workspace root, instead of flattening into the root.
-            const cloneDir = params.dir
-              ? requireWorkspacePath(params.dir)
-              : requireWorkspacePath(`${WORKSPACE_ROOT}/${repoNameFromUrl(cloneUrl)}`)
-            await git.clone({ url: cloneUrl, dir: cloneDir, ref: params.ref, headers: authHeaders })
-            signal?.throwIfAborted()
-            return text(`Cloned ${cloneUrl}${params.ref ? ` (ref ${params.ref})` : ''} into ${cloneDir}`)
-          }
-          case 'status': {
-            const entries = await git.status({ dir })
-            signal?.throwIfAborted()
-            return text(entries)
-          }
-          case 'log': {
-            const commits = await git.log({ dir })
-            signal?.throwIfAborted()
-            return text(commits)
-          }
-          case 'diff': {
-            const result = await git.diff({
-              dir,
-              ref: params.ref,
-              paths: params.path ? [params.path] : undefined,
-            })
-            signal?.throwIfAborted()
-            return text(result)
-          }
-          case 'branch': {
-            const branches = await git.branches(dir)
-            signal?.throwIfAborted()
-            return text(branches)
-          }
-          case 'remote': {
-            const remotes = await git.remotes(dir)
-            signal?.throwIfAborted()
-            return text(remotes)
-          }
-          case 'tag': {
-            const tags = await git.tags(dir)
-            signal?.throwIfAborted()
-            return text(tags)
-          }
-        }
-      } catch (error) {
-        throw new Error(`git ${params.command} failed: ${error instanceof Error ? error.message : String(error)}`)
-      }
-      throw new Error(`Unknown git command: ${params.command}`)
-    },
-  }
-
-  return [readTool, writeTool, editTool, listTool, bashTool, gitTool]
+  return [readTool, writeTool, editTool, listTool, bashTool]
 }
 
 export function createSessionSearchTool(
