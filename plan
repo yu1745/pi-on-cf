@@ -1,0 +1,188 @@
+# 流式 codeload clone — 实施计划
+
+## 0. 背景与问题
+
+`git clone` 大仓库时 PiSession DO 内存溢出。根因（已核实，见 node_modules 源码）：
+
+- isomorphic-git 的 `_fetch` 用 `collect(response.packfile)` 把**整份 packfile** 收进内存，再建索引、写 `.git`，最后 checkout；
+- checkout 阶段 packfile buffer + `.git` + **全量工作树**同时驻留 JS heap；
+- DO 128MB 上限，几个全量叠加即爆。
+
+`curl xxx | tar xz`（just-bash）不可行：just-bash 的 `stdin`/管道/accumulator 全是"全量 string 缓冲"模型，且其 `SecureFetch` 返回整块 `Uint8Array`。
+
+**方案：绕开 isomorphic-git 与 just-bash，在 worker 层实现流式 clone** —— 用 GitHub codeload 归档链接 + 原生 `fetch` 流 + `DecompressionStream('gzip')` + 手写流式 tar 解包器，逐 chunk 写入 MemoryWorkspace。无 `.git`、无 packfile、无全量缓冲。
+
+已实测验证：`DecompressionStream('gzip')` 在 Worker/Node 可用，输出真 tar 流（`ustar` magic 正确）。
+
+## 1. 目标
+
+| 指标 | 现状 | 目标 |
+|---|---|---|
+| clone 峰值内存 | packfile 全量 + .git + 工作树全量 | ≈ 解压器内部缓冲(~1MB) + 若干 chunk(~几十KB) + 工作树常驻量 |
+| .git | 克隆后删除（clone 期间占 ~17MB+） | 天然不存在 |
+| 工作树总量 | 全量 | 支持 include/exclude 过滤，可选降量 |
+| 宿主支持 | 任意 git 宿主 | 优先 GitHub(codeload)；其余回退旧路径 |
+
+**关键语义**：流式只抹平"过程峰值"；解压后工作树本体仍常驻 `_files` Map（内存工作树的本质），128MB 的最终判官是"过滤后工作树总量"。过滤是压总量的手段。
+
+## 2. 整体流程
+
+```
+git clone <url> [-b ref] [dir]   (bash-git-command)
+  → MemoryGitClient.clone()
+     ├─ host 支持 codeload ? ──────────────── 否 → 原 isomorphic-git clone（回退）
+     └─ 是：
+        1. normalizeGitUrl(url)            [已有 git-url.ts]
+        2. 解析 owner/repo
+        3. ref 缺省 → lsRemote 拿 HEAD→default branch   [已有 memory-git.lsRemote]
+        4. 拼 codeload: https://codeload.github.com/{o}/{r}/tar.gz/{ref}
+           私有仓库带 Authorization（GIT_TOKEN，复用 authHeaders）
+        5. fetch(url, { redirect:'follow', headers })
+        6. response.body.pipeThrough(new DecompressionStream('gzip'))
+        7. 流式 tar 解包器：
+           读 512B ustar 头 → 解析 name/size/type/mode/linkname
+           处理 pax 'x' / GNU 'L' 长名、prefix、硬/软链接
+           匹配过滤(include/exclude) → 命中丢弃 body / 未命中逐 chunk 流式写盘
+           防路径穿越（拒绝 ../、绝对路径）
+        8. 完成，无 .git
+```
+
+## 3. 模块设计
+
+### 3.1 流式写盘原语（MemoryWorkspace / WorkerBackend）
+
+现状：`WorkerBackend.writeFile` 整块 `_files.set(ino, bytes)`；lightning-fs 无 append。
+
+新增（WorkerBackend 加私有方法，MemoryWorkspace 暴露）：
+
+- `openWrite(filepath)` → 建 inode，返回 `FileWriter`
+- `FileWriter.append(chunk: Uint8Array)` → 分段累积（`Uint8Array[]` + 总长），**每 ~1MB 合并一次**（避免 O(n²) realloc，合并瞬间峰值 ~2×1MB，受控）
+- `FileWriter.close()` → 合并剩余分段，`_files.set(ino, finalBytes)`，释放分段数组
+
+这样 tar 解包器**边读 entry body 边 append**，不先凑齐整文件；文件本体随解压渐增（常驻量早晚要有），额外峰值只有解压器缓冲 + 传输 chunk。
+
+> 不走 lightning-fs 的 `writeFile`（它会替换整个文件，无法分段）。
+
+### 3.2 流式 tar 解包器（新文件 `src/server/stream-tar.ts`）
+
+纯函数模块，零依赖，输入 `ReadableStream<Uint8Array>`（gzip 解压后），输出 entry 回调：
+
+```ts
+interface TarEntry {
+  name: string        // 已解析完整路径（含 prefix、pax/GNU 长名）
+  size: number
+  type: 'file' | 'directory' | 'symlink' | 'hardlink' | 'other'
+  mode?: number
+  linkname?: string
+  body: ReadableStream<Uint8Array>   // 逐 chunk 消费
+}
+
+export async function walkTar(
+  stream: ReadableStream<Uint8Array>,
+  onEntry: (entry: TarEntry) => Promise<'write' | 'skip'>,
+): Promise<{ entries: number; bytes: number }>
+```
+
+要点：
+- 512B 块缓冲读取（复用 isomorphic-git `StreamReader` 的 `_accumulate/_trim` 模式）；
+- 解析 ustar 头：name(0,100) mode(100,8) size(124,12,octal) typeflag(156,1) linkname(157,100) prefix(345,155)；校验 checksum(148,8)；
+- typeflag：`0`/`\0`=file，`5`=dir，`2`=symlink，`1`=hardlink，`x`=pax extended header（记录 `path=` 等作用于下一 entry），`L`=GNU 长名，`g`=pax global；
+- 目录、`x`/`L`/`g` 头不产生文件写入；`walkTar` 只负责流解析，**不落地任何文件**（落地由调用方做，保持模块纯净可测）；
+- 两个连续 512B 零块 = 归档结束。
+
+### 3.3 过滤器（`stream-tar.ts` 内或独立小模块）
+
+```ts
+export interface CloneFilter {
+  include?: string[]   // glob，命中才保留
+  exclude?: string[]   // glob，命中即丢弃；include/exclude 同时给出时 exclude 优先
+}
+```
+
+- 复用 `memory-workspace.ts` 的 `compileGlob`（已存在）；
+- 匹配对象为 tar entry 的完整相对路径（如 `repo-abc/src/index.ts`，需先 strip 顶层目录）；
+- **默认不过滤**（保持 clone 语义）；过滤由 `git clone` 的显式参数/未来工具传入；
+- 过滤决策在**读 body 前**做出：命中 `skip` 则调用方直接 `reader.cancel()` / 跳过 body 字节，不 append。
+
+### 3.4 clone 编排（新文件 `src/server/stream-clone.ts`）
+
+```ts
+export async function streamClone(opts: {
+  ws: MemoryWorkspace
+  url: string                 // 已 normalize 的 https URL
+  dir: string                 // 目标绝对路径（/workspace/xxx）
+  ref?: string
+  headers?: Record<string,string>
+  filter?: CloneFilter
+}): Promise<{ entries: number; bytes: number; ref: string }>
+```
+
+内部：
+1. 解析 host/owner/repo（复用 `git-url.ts` 的 URL 逻辑，提取 pathname 两段）；
+2. ref 缺省 → `new MemoryGitClient(ws).lsRemote({ url, headers, symrefs: true })` 找 `HEAD` 的 `target` 作为 default branch；失败则回退旧 clone；
+3. host === `github.com` → codeload URL；其他 host（gitlab/bitbucket/gitea）**本期不做，回退旧路径**（架构可扩展：每个 host 一个 `archiveUrlFor(url, ref)` 分支）；
+4. `fetch`（原生全局 fetch，不经过 just-bash；`redirect: 'follow'`）；
+5. `!res.ok` 或非 gzip → 报错；`res.body` 为空 → 报错；
+6. `res.body.pipeThrough(new DecompressionStream('gzip'))` → `walkTar`：
+   - strip 顶层目录（codeload 归档形如 `{repo}-{sha}/`，跳过第一段）；
+   - 过滤决策；
+   - 写文件：`ws.mkdir` 父目录（已有，支持 recursive）→ `openWrite` → 逐 chunk append → close；mode 传递（exec 位）；
+   - symlink：`ws` 已有 symlink 能力（WorkerBackend.symlink）；hardlink：读目标文件内容再写（简单方案）；
+   - 路径安全：拒绝 `..`、绝对路径、`\0`；
+7. 单文件大小护栏：`maxFileSize`（默认 64MB）超限即中止并报错（防单个巨型文件击穿 DO）。
+
+### 3.5 接线（bash-git-command.ts / memory-git.ts）
+
+- `MemoryGitClient` 新增 `cloneStream`（或改造 `clone`）：优先走 `streamClone`，`streamClone` 内部判断 host 不支持/失败时抛特殊错误 → `clone` catch 后回退原 `isogit.clone`；
+- `bash-git-command.ts` clone 分支：透传 `--filter` 语义（可选）：支持 `git clone --include=... --exclude=...`（自定义 flag，非标准 git，帮助文本注明）；默认不带 = 完整 clone；
+- 错误信息：`git clone failed: <msg>` 不变；新增超限/宿主不支持提示。
+
+## 4. 内存账（对照）
+
+| 时刻 | 常驻（不可避免） | 额外峰值 |
+|---|---|---|
+| 下载中 | — | fetch chunk × N（~几十KB）+ gzip 内部缓冲（~1MB） |
+| 解压中 | 已落盘文件渐增 | 同上 + 单文件分段缓冲（≤1MB 合并粒度） |
+| 完成 | 过滤后工作树全量 | 0 |
+
+- 流式抹平"过程峰值"，从 isomorphic-git 的「packfile+.git+工作树」叠加 → 「~1MB + 工作树」。
+- 128MB 判官 = **过滤后工作树总量**；`exclude` 可显著降量。
+
+## 5. 安全与边界
+
+- tar 路径穿越：`..`、绝对路径、`\0` 一律拒绝（对齐 just-bash `Gt` 的防护）；
+- symlink 攻击：保留 symlink 语义（worker 内无真实磁盘，风险低），但 entry 名仍走路径净化；
+- 私有仓库：`Authorization` 头透传（复用 `authHeaders` / `GIT_TOKEN`）；
+- codeload 302：`redirect:'follow'`，最终 URL 变化无影响；
+- 网络失败/非 gzip/HTTP 4xx/5xx：清晰报错 + 回退旧 clone；
+- `maxFileSize`（64MB）护栏；
+- 非 github.com 宿主：本期回退旧路径，README 注明。
+
+## 6. 测试计划
+
+1. **stream-tar 单测**（vitest，`stream-tar.test.ts`）：
+   - fixture：python 生成 3 个 tar.gz（短名/长名(pax)/嵌套目录/symlink/带 prefix），放 `test/fixtures/`；
+   - 断言：entry 序列、name 解析（含 pax 长名、prefix）、size、type、body 字节正确；
+   - 路径穿越 entry 被拒；截断流报错；
+2. **过滤单测**：include/exclude glob 命中/丢弃正确，skip 时 body 不消费（或正确 cancel）；
+3. **worker-fs-backend 流式写单测**：openWrite/append 多 chunk（跨合并边界）/close 后 `readFile` 内容一致；大文件分段无丢失；
+4. **stream-clone 集成测试**（vitest worker pool，mock 全局 fetch 返回 fixture 流）：
+   - 有 ref / 无 ref（lsRemote mock 返回 HEAD symref）；
+   - 过滤后 `ls`/`readFile` 验证落地子集；
+   - 非 github host 回退路径被触发；
+5. **bash 层冒烟**（`bash-git-command.test.ts` 已有）：`git clone https://github.com/... ` 走新路径 + 旧路径回归。
+
+## 7. 实施步骤（按依赖顺序）
+
+1. **P1**：`worker-fs-backend.ts` 加 `openWrite/append/close` + `MemoryWorkspace` 暴露 `openWrite`；单测。
+2. **P2**：`src/server/stream-tar.ts` 流式 tar 解析 + 过滤 + fixture；单测。
+3. **P3**：`src/server/stream-clone.ts` 编排（lsRemote 默认分支、codeload URL、fetch、gzip、walkTar 落地、护栏、回退异常）；集成测试。
+4. **P4**：接线 `MemoryGitClient.clone()` + `bash-git-command.ts`（透传 include/exclude，非标准 flag 注明）；回归测试。
+5. **P5**：手动验证（`pnpm dev` + 真实仓库 clone 到 DO/本地 worker），对照 `[fs:mem]` 日志（已有 `logMem`）确认峰值下降。
+
+## 8. 非目标（本期不做）
+
+- 服务端过滤/子目录打包（GitHub 不支持；GitLab `/-/archive` 支持子目录，架构已留扩展点，可二期）；
+- 下载量节省（过滤省常驻内存，不省流量——gzip 解压流仍全量流过）；
+- GitLab/Bitbucket/Gitea codeload 分支（扩展 `archiveUrlFor` 即可，P3 预留）；
+- just-bash 内部流式改造（本方案已完全绕开）。

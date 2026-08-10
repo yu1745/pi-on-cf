@@ -27,6 +27,7 @@
 
 import * as isogit from 'isomorphic-git'
 import type { MemoryWorkspace } from './memory-workspace'
+import { streamClone, UnsupportedHostError, archiveUrlFor, type CloneFilter } from './stream-clone'
 
 export interface GitAuth {
   /** Value of the Authorization header, e.g. `Bearer <token>` or `Basic <b64>`. */
@@ -48,6 +49,10 @@ export interface CloneOptions {
   ref?: string
   /** Optional extra HTTP headers (e.g. Authorization for private repos). */
   headers?: Record<string, string>
+  /** Optional include/exclude glob filter (streaming path only). When
+   *  given, entries not matching are skipped before their bodies are
+   *  downloaded, cutting the post-clone working-tree memory footprint. */
+  filter?: CloneFilter
 }
 
 /** A single remote ref, matching isomorphic-git's ServerRef shape. */
@@ -91,16 +96,74 @@ export class MemoryGitClient {
   }
 
   /**
-   * Shallow clone a repository into the workspace, then drop `.git`.
+   * Clone a repository into the workspace.
    *
-   * Uses depth-1 / single-branch / no-tags to keep the fetch small (the
-   * working tree is what the agent reads; history is not needed since
-   * no local git subcommand can read it). After checkout, `.git` is
-   * removed because no remaining surface (clone / ls-remote) consumes
-   * a local object database.
+   * Two strategies, tried in order:
+   *
+   *   1. Streaming codeload clone (GitHub only). Fetches the repo's
+   *      tar.gz archive and pipes it through a gzip+tar decoder straight
+   *      into the workspace — no packfile, no .git, no whole-archive
+   *      buffer. This is the memory-cheap path and the default for any
+   *      github.com URL whose default branch can be resolved (or whose
+   *      ref is supplied explicitly).
+   *   2. isomorphic-git depth-1 shallow clone, then drop `.git`.
+   *      Used for non-GitHub hosts and whenever the streaming path can't
+   *      even start cleanly (UnsupportedHostError / default-branch can't
+   *      be resolved). A streaming failure AFTER files have been written
+   *      is NOT silently retried — it propagates.
    */
   async clone(opts: CloneOptions): Promise<void> {
     await this.ensureDir(opts.dir)
+
+    // Streaming fast path: GitHub codeload. archiveUrlFor doubles as a
+    // host check (returns null for non-github hosts).
+    if (archiveUrlFor(opts.url, '_') !== null) {
+      let ref = opts.ref
+      if (!ref) {
+        ref = (await this.resolveDefaultBranch(opts.url, opts.headers)) ?? undefined
+      }
+      if (ref) {
+        try {
+          await streamClone({
+            ws: this.ws,
+            url: opts.url,
+            dir: opts.dir,
+            ref,
+            headers: opts.headers,
+            filter: opts.filter,
+          })
+          return
+        } catch (e) {
+          // Pre-write conditions (unsupported host quirks, non-2xx,
+          // non-gzip, empty body, no DecompressionStream) → fall back to
+          // isomorphic-git, which re-resolves everything server-side.
+          if (!(e instanceof UnsupportedHostError)) throw e
+        }
+      }
+      // ref couldn't be resolved (no HEAD symref / lsRemote failed) →
+      // fall through to isomorphic-git, which discovers the default
+      // branch itself.
+    }
+
+    await this.isogitClone(opts)
+  }
+
+  /** Resolve the default branch name for `url` via `HEAD`'s symref target.
+   *  Returns null if HEAD can't be resolved (private repo without auth,
+   *  non-standard server, network error) so the caller can fall back. */
+  private async resolveDefaultBranch(url: string, headers?: Record<string, string>): Promise<string | null> {
+    try {
+      const refs = await this.lsRemote({ url, headers, symrefs: true })
+      const head = refs.find((r) => r.ref === 'HEAD' && r.target)
+      if (!head?.target) return null
+      return head.target.replace(/^refs\/heads\//, '')
+    } catch {
+      return null
+    }
+  }
+
+  /** isomorphic-git depth-1 shallow clone + .git reclamation. */
+  private async isogitClone(opts: CloneOptions): Promise<void> {
     // isomorphic-git needs an http transport; the browser build works in
     // Workers. Import lazily so the base bundle isn't penalised.
     const http = (await import('isomorphic-git/http/web')).default

@@ -25,6 +25,7 @@
 
 import { defineCommand } from 'just-bash'
 import type { MemoryGitClient } from './memory-git'
+import type { CloneFilter } from './stream-clone'
 import { normalizeGitUrl } from './git-url'
 
 export interface BashGitCommandOptions {
@@ -71,10 +72,17 @@ export function defineBashGitCommand(options: BashGitCommandOptions) {
     // ---------------- clone ----------------
     if (sub === 'clone') {
       // argv shape: clone [flags] <url> [<dir>]
-      // Recognised flags: -b/--branch <ref>. Other git clone flags
-      // (--depth/--single-branch/--no-tags) are force-coded in the
-      // client and silently ignored here.
+      // Recognised flags:
+      //   -b/--branch <ref>           branch/tag/commit to clone
+      //   --include <glob>            (non-standard) keep only matching
+      //                               repo-relative paths; repeatable
+      //   --exclude <glob>            (non-standard) drop matching paths;
+      //                               repeatable; wins over --include
+      // Other git clone flags (--depth/--single-branch/--no-tags) are
+      // force-coded in the client and silently ignored here.
       let ref: string | undefined
+      const include: string[] = []
+      const exclude: string[] = []
       const positional: string[] = []
       for (let i = 1; i < args.length; i++) {
         const a = args[i]
@@ -85,9 +93,19 @@ export function defineBashGitCommand(options: BashGitCommandOptions) {
           ref = a.slice(2)
         } else if (a.startsWith('--branch=')) {
           ref = a.slice('--branch='.length)
+        } else if (a === '--include') {
+          const v = args[++i]
+          if (v) include.push(v)
+        } else if (a.startsWith('--include=')) {
+          include.push(a.slice('--include='.length))
+        } else if (a === '--exclude') {
+          const v = args[++i]
+          if (v) exclude.push(v)
+        } else if (a.startsWith('--exclude=')) {
+          exclude.push(a.slice('--exclude='.length))
         } else if (a?.startsWith('-')) {
           // ignore unknown flags (--depth, --single-branch, etc.)
-          if (a === '--depth' || a === '--branch' || a === '-b') i++ // skip their value too
+          if (a === '--depth') i++ // skip its value too
         } else if (a !== undefined) {
           positional.push(a)
         }
@@ -95,17 +113,24 @@ export function defineBashGitCommand(options: BashGitCommandOptions) {
 
       const rawUrl = positional[0]
       if (!rawUrl) {
-        return { stdout: '', stderr: 'usage: git clone <url> [<dir>]\n', exitCode: 1 }
+        return { stdout: '', stderr: 'usage: git clone <url> [<dir>] [-b <ref>] [--include <glob>...] [--exclude <glob>...]\n', exitCode: 1 }
       }
       const url = normalizeGitUrl(rawUrl)
       const dir = positional[1]
         ? resolveDir(positional[1], workspaceRoot)
         : `${workspaceRoot.replace(/\/$/, '')}/${repoNameFromUrl(url)}`
 
+      // Build a filter only when at least one glob is given (an empty
+      // filter would keep everything, but we avoid passing it so the
+      // streaming path stays in "clone everything" mode by default).
+      const filter: CloneFilter | undefined =
+        include.length > 0 || exclude.length > 0 ? { include, exclude } : undefined
+
       try {
-        await git.clone({ url, dir, ref, headers: authHeaders })
+        await git.clone({ url, dir, ref, headers: authHeaders, filter })
+        const filterNote = filter ? ` (filtered: ${[...include.map((g) => `+${g}`), ...exclude.map((g) => `-${g}`)].join(' ')})` : ''
         return {
-          stdout: `Cloning into '${dir}'...\nCloned ${url}${ref ? ` (ref ${ref})` : ''} into ${dir}\n`,
+          stdout: `Cloning into '${dir}'...\nCloned ${url}${ref ? ` (ref ${ref})` : ''} into ${dir}${filterNote}\n`,
           stderr: '',
           exitCode: 0,
         }
