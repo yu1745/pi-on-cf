@@ -112,7 +112,8 @@ export class PiRegistry extends Agent<Env> {
         entry_id UNINDEXED,
         role UNINDEXED,
         timestamp UNINDEXED,
-        text
+        text,
+        tokenize = 'trigram'
       );
 
       CREATE TABLE IF NOT EXISTS pi_registry_applied_events (
@@ -143,6 +144,35 @@ export class PiRegistry extends Agent<Env> {
         applied_at TEXT NOT NULL
       );
     `)
+
+    // v3 迁移：FTS 改为 trigram tokenizer。旧默认 tokenizer 把一长串 CJK 当成单个 token，
+    // 中文子串搜索（如搜「发电」命中「风力发电机」）基本失效；trigram 按 3 字符窗口切分，
+    // 天然支持中文子串匹配。pi_registry_search_entries 是权威数据、FTS 只是派生索引，
+    // 因此直接删表重建 + 全量重放即可，无数据丢失。
+    const ftsDdl = this.ctx.storage.sql
+      .exec<{ sql: string }>(
+        `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pi_registry_search_fts'`,
+      )
+      .toArray()[0]?.sql
+    if (ftsDdl && !/\btrigram\b/i.test(ftsDdl)) {
+      this.ctx.storage.transactionSync(() => {
+        this.ctx.storage.sql.exec('DROP TABLE pi_registry_search_fts')
+        this.ctx.storage.sql.exec(`
+          CREATE VIRTUAL TABLE pi_registry_search_fts USING fts5(
+            session_id UNINDEXED,
+            entry_id UNINDEXED,
+            role UNINDEXED,
+            timestamp UNINDEXED,
+            text,
+            tokenize = 'trigram'
+          )
+        `)
+        this.ctx.storage.sql.exec(
+          `INSERT INTO pi_registry_search_fts(session_id, entry_id, role, timestamp, text)
+           SELECT session_id, entry_id, role, timestamp, text FROM pi_registry_search_entries`,
+        )
+      })
+    }
   }
 
   @callable()
