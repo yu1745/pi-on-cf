@@ -32,7 +32,7 @@
 
 import FS from '@isomorphic-git/lightning-fs'
 import path from 'node:path/posix'
-import { WorkerBackend } from './worker-fs-backend'
+import { WorkerBackend, type FileWriter } from './worker-fs-backend'
 
 export interface ThinkFileInfo {
   path: string
@@ -59,6 +59,10 @@ function mimeFor(name: string): string {
 export class MemoryWorkspace {
   /** lightning-fs instance; its `.promises` is what isomorphic-git consumes. */
   readonly fs: FS
+  /** Underlying in-memory backend. Held directly so streaming-write
+   *  primitives (openWrite) can bypass lightning-fs's whole-file
+   *  writeFile and feed a file chunk-by-chunk. */
+  readonly backend: WorkerBackend
   private _git: unknown = null
 
   constructor() {
@@ -66,7 +70,8 @@ export class MemoryWorkspace {
     // Web Locks dependencies that don't exist in the Workers runtime.
     // WorkerBackend holds everything in JS heap — zero persistence,
     // zero IO, matching the ephemeral-session design.
-    this.fs = new FS('pi-mem', { backend: new WorkerBackend() } as unknown as ConstructorParameters<typeof FS>[1])
+    this.backend = new WorkerBackend()
+    this.fs = new FS('pi-mem', { backend: this.backend } as unknown as ConstructorParameters<typeof FS>[1])
   }
 
   // ---------- lifecycle ----------
@@ -115,6 +120,15 @@ export class MemoryWorkspace {
     // lightning-fs's mkdirp runs on its own; ensure parent dir exists first.
     await this.ensureParent(p)
     await this.fs.promises.writeFile(p, data, 'utf8')
+  }
+
+  /** Open a streaming writer for `p` (absolute workspace path). Returns
+   *  a FileWriter whose append() absorbs chunks and close() finalises
+   *  the file. Parent directories are created automatically. Prefer this
+   *  over writeFile when a file's body arrives in many pieces (streaming
+   *  decode of an archive). */
+  openWrite(p: string, opts?: { mode?: number }): FileWriter {
+    return this.backend.openWrite(p, opts)
   }
 
   async readDir(p: string, opts?: { limit?: number; offset?: number }): Promise<ThinkFileInfo[]> {
