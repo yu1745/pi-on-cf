@@ -32,6 +32,7 @@ vi.mock('../../client/router', () => ({
 }))
 
 import { SessionCatalog } from './session-catalog'
+import { consumePendingPrompt } from '../workspace/pending-prompt'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -84,11 +85,12 @@ describe('SessionCatalog', () => {
     render(<SessionCatalog />)
     await screen.findByText('Edge cache prototype')
 
-    fireEvent.change(screen.getByLabelText('问题标题 可选'), { target: { value: '  New investigation  ' } })
+    fireEvent.change(screen.getByLabelText(/你的问题/), { target: { value: '  New investigation  ' } })
     fireEvent.submit(screen.getByRole('button', { name: '提问' }).closest('form')!)
 
     await waitFor(() => expect(mocks.registry.stub.createSession).toHaveBeenCalledWith({ name: 'New investigation' }))
     expect(mocks.navigate).toHaveBeenCalledWith({ to: '/sessions/$sessionId', params: { sessionId: 'created-session' } })
+    expect(consumePendingPrompt()).toBe('New investigation')
   })
 
   it('does not render results from an older search that finishes last', async () => {

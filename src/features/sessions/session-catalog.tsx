@@ -6,6 +6,7 @@ import { Button } from '@cloudflare/kumo/components/button'
 import { Copy, GitFork, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import type { SessionSummary } from '../../shared/pi-contract'
 import { useSessionRegistry } from './use-session-registry'
+import { setPendingPrompt } from '../workspace/pending-prompt'
 
 function relativeTime(value: string, now: number) {
   const seconds = Math.round((new Date(value).getTime() - now) / 1000)
@@ -53,8 +54,10 @@ export function SessionCatalog() {
     event.preventDefault()
     setBusy('create')
     setMutationError('')
+    const title = name.trim()
     try {
-      const session = await registry.agent.stub.createSession({ name: name.trim() || undefined })
+      const session = await registry.agent.stub.createSession({ name: title || undefined })
+      if (title) setPendingPrompt(title)
       await navigate({ to: '/sessions/$sessionId', params: { sessionId: session.id } })
     } catch (caught) {
       setMutationError(caught instanceof Error ? caught.message : String(caught))
@@ -86,7 +89,7 @@ export function SessionCatalog() {
           <p className="panel-index">01 / 提问</p>
           <h2>提出你的<br />问题</h2>
           <form onSubmit={create} className="create-session-form">
-            <label htmlFor="session-name">问题标题 <span>可选</span></label>
+            <label htmlFor="session-name">你的问题 <span>将作为标题并发送给 AI</span></label>
             <input id="session-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：如何搭建风力发电机？" maxLength={120} />
             <Button type="submit" disabled={Boolean(busy)} className="catalog-primary">
               <Plus size={18} /> {busy === 'create' ? '提交中' : '提问'}

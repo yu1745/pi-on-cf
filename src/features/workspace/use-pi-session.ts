@@ -15,6 +15,7 @@ import {
   type WorkspaceFile,
 } from '../../shared/pi-contract'
 import { reduceStreamEvent, transcriptEntries, type TranscriptState } from './transcript'
+import { consumePendingPrompt } from './pending-prompt'
 
 const emptyTranscript: TranscriptState = { entries: [], activeReasoningId: '', activeTextId: '' }
 
@@ -153,6 +154,17 @@ export function usePiSession(sessionId: string) {
     }
   }, [refreshFiles, refreshSession, sessionId])
 
+  // 首页「提问」转交：会话就绪后自动发出用户在 catalog 输入的那段话
+  const autoPromptSentRef = useRef(false)
+  const sendPromptRef = useRef<((prompt: string) => Promise<void>) | undefined>(undefined)
+  useEffect(() => { sendPromptRef.current = sendPrompt })
+  useEffect(() => {
+    if (!isReady || autoPromptSentRef.current) return
+    autoPromptSentRef.current = true
+    const prompt = consumePendingPrompt()
+    if (prompt) void sendPromptRef.current?.(prompt)
+  }, [isReady])
+
   const selectedFileMtime = files.find((file) => file.path === selectedPath)?.mtime
   useEffect(() => {
     if (!selectedPath) {
@@ -181,9 +193,7 @@ export function usePiSession(sessionId: string) {
     transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: isRunning ? 'auto' : 'smooth' })
   }, [transcript.entries, isRunning])
 
-  async function submit(event: FormEvent) {
-    event.preventDefault()
-    const prompt = input.trim()
+  async function sendPrompt(prompt: string) {
     if (!prompt || isRunning || pendingAction || !isReady) return
     const request = ++promptRequestRef.current
     setInput('')
@@ -212,6 +222,11 @@ export function usePiSession(sessionId: string) {
         await Promise.all([refreshSession(), refreshFiles()])
       }
     }
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    await sendPrompt(input.trim())
   }
 
   async function runAction(key: string, operation: () => Promise<unknown>) {
