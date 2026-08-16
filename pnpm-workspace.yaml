@@ -1,0 +1,13 @@
+allowBuilds:
+  '@google/genai': false
+  '@mongodb-js/zstd': false
+  core-js-pure: false
+  esbuild: true
+  node-liblzma: false
+  protobufjs: false
+  workerd: false
+onlyBuiltDependencies:
+  - esbuild
+  - lightningcss
+overrides:
+  shiki: 3.23.0

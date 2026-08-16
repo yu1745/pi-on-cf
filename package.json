@@ -57,14 +57,5 @@
     "vite": "^8.0.0",
     "vitest": "^4.1.5",
     "wrangler": "^4.114.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "lightningcss"
-    ],
-    "overrides": {
-      "shiki": "3.23.0"
-    }
   }
 }
