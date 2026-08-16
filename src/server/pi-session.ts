@@ -9,6 +9,7 @@ import {
 } from '@earendil-works/pi-agent-core'
 import { Agent, callable } from 'agents'
 import type { StreamingResponse } from 'agents'
+import { appBranding } from '../config/app-branding'
 import type {
   ApplyMemoryExtractionInput,
   CompactionSettings,
@@ -645,11 +646,8 @@ function messageText(message: unknown): string {
 /** 用一次轻量 LLM 请求，根据第一条问答生成会话标题。失败返回空字符串。 */
 async function generateSessionTitle(harness: PiHarness, question: string, answer: string, sessionId: string): Promise<string> {
   const response = await harness.models.complete(harness.getModel(), {
-    systemPrompt: [
-      'You are the titling assistant for a Minecraft (我的世界) Q&A board.',
-      'Given a player\'s question and the assistant\'s answer, produce a concise Chinese title that summarizes the topic.',
-      'Rules: at most 20 Chinese characters; no quotes; no "标题：" prefix; no trailing punctuation; return only the title itself.',
-    ].join('\n'),
+    // 业务身份（答疑板）收敛在 app-branding；框架不感知具体部署场景。
+    systemPrompt: appBranding.titlingPrompt,
     messages: [{
       role: 'user',
       content: `问题：${question}\n\n回答开头：${answer.slice(0, 800)}`,

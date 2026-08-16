@@ -4,6 +4,7 @@ import { Banner } from '@cloudflare/kumo/components/banner'
 import { Tabs } from '@cloudflare/kumo/components/tabs'
 import { ArrowLeft, GitCommitHorizontal } from 'lucide-react'
 import { PromptComposer } from './components/prompt-composer'
+import { appBranding } from '../../config/app-branding'
 import { SessionTree } from './components/session-tree'
 import { TranscriptView } from './components/transcript-view'
 import { WorkspaceBrowser } from './components/workspace-browser'
@@ -82,7 +83,7 @@ function WorkspaceSession({ sessionId }: { sessionId: string }) {
 
         <div id="chat-panel" className={`console-panel ${session.mobileView !== 'chat' ? 'mobile-hidden' : ''}`} role="tabpanel" aria-label="对话" aria-labelledby="chat-tab">
           <div className="console-header"><span>对话</span><span>{messageCount} 条对话</span></div>
-          <TranscriptView activeTextId={session.activeTextId} entries={session.entries} isRunning={session.isRunning} onScroll={session.handleTranscriptScroll} onTryOperation={() => session.setInput('如何正确搭建 IC2 风力发电机并接入电网？')} transcriptRef={session.transcriptRef} />
+          <TranscriptView activeTextId={session.activeTextId} entries={session.entries} isRunning={session.isRunning} onScroll={session.handleTranscriptScroll} onTryOperation={() => session.setInput(appBranding.examplePrompt)} transcriptRef={session.transcriptRef} />
           {session.error && <Banner className="error-banner" variant="error" role="alert" description={session.error} />}
           <PromptComposer input={session.input} isReady={session.isReady} isResetting={Boolean(session.pendingAction)} isRunning={session.isRunning} onAbort={() => void session.abort()} onInputChange={session.setInput} onSubmit={session.submit} />
         </div>

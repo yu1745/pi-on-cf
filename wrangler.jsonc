@@ -33,7 +33,8 @@
     "COMPUTER_R2_BUCKET": "pi-on-cf-computer",
     "SEARCH_BACKEND": "",
     "SEARCH_API_URL": "",
-    "SEARCH_API_KEY": ""
+    "SEARCH_API_KEY": "",
+    "APP_PERSONA_PROMPT": ""
   },
   "secrets": {
     "required": [

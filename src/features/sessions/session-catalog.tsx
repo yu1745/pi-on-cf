@@ -7,6 +7,7 @@ import { Copy, GitFork, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import type { SessionSummary } from '../../shared/pi-contract'
 import { useSessionRegistry } from './use-session-registry'
 import { setPendingPrompt } from '../workspace/pending-prompt'
+import { appBranding } from '../../config/app-branding'
 
 function relativeTime(value: string, now: number) {
   const seconds = Math.round((new Date(value).getTime() - now) / 1000)
@@ -78,7 +79,7 @@ export function SessionCatalog() {
       <header className="catalog-masthead">
         <div className="brand-lockup">
           <div className="brand-mark">π</div>
-          <div><p className="eyebrow">《我的世界》服务器答疑板</p><h1>MC 答疑板</h1></div>
+          <div><p className="eyebrow">{appBranding.catalogEyebrow}</p><h1>{appBranding.catalogTitle}</h1></div>
         </div>
         <div className="catalog-counter"><strong>{registry.sessions.length.toString().padStart(2, '0')}</strong><span>个提问</span></div>
         <ThemeToggle />
@@ -90,12 +91,12 @@ export function SessionCatalog() {
           <h2>提出你的<br />问题</h2>
           <form onSubmit={create} className="create-session-form">
             <label htmlFor="session-name">你的问题 <span>将作为标题并发送给 AI</span></label>
-            <input id="session-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：如何搭建风力发电机？" maxLength={120} />
+            <input id="session-name" value={name} onChange={(event) => setName(event.target.value)} placeholder={appBranding.newSessionPlaceholder} maxLength={120} />
             <Button type="submit" disabled={Boolean(busy)} className="catalog-primary">
               <Plus size={18} /> {busy === 'create' ? '提交中' : '提问'}
             </Button>
           </form>
-          <div className="registry-note"><span>答疑板</span><strong>在线 / 随时提问</strong><p>每个提问都会开启一个独立的 AI 会话，结合《我的世界》模组源码为你解答。</p></div>
+          <div className="registry-note"><span>{appBranding.registryBadge}</span><strong>{appBranding.registryStatus}</strong><p>{appBranding.registryNote}</p></div>
         </aside>
 
         <div className="catalog-list-area">

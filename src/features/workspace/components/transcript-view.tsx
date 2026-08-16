@@ -3,6 +3,7 @@ import type { RefObject, UIEventHandler } from 'react'
 import { Button } from '@cloudflare/kumo/components/button'
 import { Streamdown } from 'streamdown'
 import type { TranscriptEntry } from '../transcript'
+import { appBranding } from '../../../config/app-branding'
 import { ActivityCard } from './activity-card'
 
 const HighlightedMarkdown = lazy(() => import('./highlighted-code').then((module) => ({ default: module.HighlightedMarkdown })))
@@ -34,8 +35,8 @@ export function TranscriptView({ activeTextId, entries, isRunning, onScroll, onT
         <div className="empty-state">
           <span className="oversized-pi">π</span>
           <div>
-            <h2>《我的世界》模组答疑助手。</h2>
-            <p>这里是你的《我的世界》服务器答疑板：工业2（IC2）等模组的问题都可以直接提问，助手会结合真实项目源码来解答。</p>
+            <h2>{appBranding.welcomeHeading}</h2>
+            <p>{appBranding.welcomeBody}</p>
             <Button className="empty-state-action" variant="ghost" onClick={onTryOperation}>试试问一个问题</Button>
           </div>
         </div>

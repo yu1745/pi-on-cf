@@ -1,6 +1,7 @@
 import { AgentHarness, Session, type AgentHarnessTool } from '@earendil-works/pi-agent-core'
 import { createModels, createProvider, type Model } from '@earendil-works/pi-ai'
 import { stream, streamSimple } from '@earendil-works/pi-ai/api/openai-completions'
+import { appBranding } from '../config/app-branding'
 import type { PiSessionStorage } from './pi-session-storage'
 
 export type ModelSource = 'env'
@@ -25,10 +26,15 @@ type CreatePiHarnessOptions = {
   modelId?: string
 }
 
-const BASE_SYSTEM_PROMPT = [
+/**
+ * 平台层系统提示词 —— 描述本框架运行环境的事实（Workers、内存文件系统、
+ * 工具语义、git/curl 能力边界、会话生命周期）。必须随工具实现同步修改，
+ * 因此留在代码里。与部署实例身份（角色、语言、领域规则）相关的内容一律
+ * 放到 src/config/app-branding.ts 的 personaPrompt，可用 env.APP_PERSONA_PROMPT
+ * 在部署时整段覆盖。
+ */
+const PLATFORM_SYSTEM_PROMPT = [
   'You are Pi running natively on Cloudflare Workers.',
-  'This instance is a Q&A board (答疑板) for the user\'s Minecraft (我的世界) server. Users come here to ask questions about modded Minecraft — mainly IC2 / IndustrialCraft 2 / 工业2. Be a friendly Minecraft mod expert and answer their questions in Chinese, grounding answers in the actual ic2-fabric source code when relevant.',
-  'Always respond in Chinese (中文) unless the user explicitly asks otherwise.',
   'Use the workspace tools to inspect and modify files.',
   'Workspace paths are absolute and rooted at /workspace.',
   'Available file tools: read, write, edit, and list. These operate on an in-memory filesystem — extremely fast, but see the lifetime note below.',
@@ -38,11 +44,6 @@ const BASE_SYSTEM_PROMPT = [
   'In the bash tool there is no native binary execution (no npm, python, node). For searching, piping, or any text processing use bash (grep, sed, awk, jq, find, sort, uniq, wc, etc. all work, with pipes and redirections) — it is strictly more capable than a dedicated search tool and operates on the same filesystem as read/write. For HTTP use `curl` inside bash. For git use `git clone`/`git ls-remote` inside bash.',
   'The in-memory filesystem is tied to this session\'s lifetime: when the session is idle for a while the runtime may restart it, which empties the filesystem. If a file or repository that should exist is missing (ENOENT), do not treat it as user error — re-clone the repository or re-create the file as needed. Conversation history persists across such restarts, so the user may refer to work from earlier without realizing the files are gone.',
   'Use the memory tool only when the user directly asks to remember, save, correct, or forget something. Do not call it merely because they state a fact or preference; background extraction handles that.',
-  'When the user asks anything about IC2 (IndustrialCraft 2 / 工业2), that always refers to the project github.com/yu1745/ic2-fabric. Before answering, run `git clone https://github.com/yu1745/ic2-fabric` in bash (or re-clone it if the repository is missing, per the filesystem lifetime note above) so you can answer from the actual source code.',
-  'Identifying the mod in scope: if the user does not say which mod their question is about, you MUST proactively ask them to name the mod (and version / loader if relevant) before answering. Only if the user genuinely cannot determine the mod should you make a best-effort guess based on context — and in that case clearly state it is a guess.',
-  'Every time you need to look up a mod (or confirm which one the user means), first download the current mod index: `curl -s https://forge.wangyu.website/mods-index.json` — this is the authoritative list of slugs/identifiers for the server. Read the raw output directly; do NOT pipe it through jq or any other JSON processor (the index is meant to be read as-is so you can match names/slugs yourself). Match the user\'s mod name against it. Do not cache this file across sessions or assume its contents from memory; re-download it every time.',
-  'Once you have the mod slug(s) from the index, resolve the source code link via the Modrinth API. Call it like this in bash: curl -s "https://api.modrinth.com/v2/projects?ids=%5B%22slug1%22,%22slug2%22%5D" (the ids param must be URL-encoded JSON, e.g. ["slug1","slug2"]). Prefer this Modrinth lookup over guessing. Each project object in the response contains a `source_url` field (the source-code link the author filled in on Modrinth). Use that URL to `git clone` the source and answer from the real code.',
-  'Answering priority for any mod question: (1) prefer to answer from the actual source code — clone it and read it; (2) if no source code can be found (no source_url, repo private/deleted, or Modrinth has no entry), you may fall back to answering from your own memory/training — but you MUST explicitly tell the user that you could not find the source code and the answer is based on memory and may be inaccurate. Never present a memory-based answer as if it were grounded in source.',
 ].join('\n')
 
 /**
@@ -83,6 +84,9 @@ function resolveModel(env: Env, modelId: string): Model<'openai-completions'> {
 }
 
 export function createPiHarness({ env, storage, tools, memory, modelId }: CreatePiHarnessOptions) {
+  // 业务层 persona：部署时可用 APP_PERSONA_PROMPT 整段覆盖（wrangler vars / .dev.vars），
+  // 缺省取 src/config/app-branding.ts。
+  const personaPrompt = env.APP_PERSONA_PROMPT?.trim() || appBranding.personaPrompt
   const options = listModelOptions(env)
   const chosen = modelId && options.some((o) => o.id === modelId)
     ? modelId
@@ -117,10 +121,10 @@ export function createPiHarness({ env, storage, tools, memory, modelId }: Create
     tools,
     systemPrompt: async () => {
       try {
-        return buildPiSystemPrompt(await memory.getMemoryContext())
+        return buildPiSystemPrompt(await memory.getMemoryContext(), personaPrompt)
       } catch (error) {
         console.error('Could not load long-term memory', error)
-        return buildPiSystemPrompt('')
+        return buildPiSystemPrompt('', personaPrompt)
       }
     },
     thinkingLevel: 'medium',
@@ -132,8 +136,16 @@ export function getMemoryModel(env: Env): Model<'openai-completions'> {
   return resolveModel(env, id)
 }
 
-export function buildPiSystemPrompt(memoryContext: string): string {
-  return memoryContext ? `${BASE_SYSTEM_PROMPT}\n\n${memoryContext}` : BASE_SYSTEM_PROMPT
+/**
+ * 组装最终 systemPrompt：平台层 + 业务层 persona + 长期记忆。
+ * persona 缺省取 appBranding.personaPrompt（测试可直接传自定义值）。
+ */
+export function buildPiSystemPrompt(
+  memoryContext: string,
+  personaPrompt: string = appBranding.personaPrompt,
+): string {
+  const base = `${PLATFORM_SYSTEM_PROMPT}\n\n${personaPrompt}`
+  return memoryContext ? `${base}\n\n${memoryContext}` : base
 }
 
 export type PiHarness = ReturnType<typeof createPiHarness>
